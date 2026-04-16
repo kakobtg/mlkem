@@ -1,0 +1,23 @@
+[package]
+name = "mlkem"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+test-utils = []      # expose internal deterministic APIs only for tests
+
+[dependencies]
+sha3 = "0.10"         # for SHA3-256, SHA3-512, SHAKE128/SHAKE256
+zeroize = "1"         # zero secrets on drop
+subtle = "2"          # constant-time eq / conditional select helpers
+rand_core = "0.6"
+
+
+[dev-dependencies]
+rand = "0.8"
+hex = "0.4"
+
+
+
