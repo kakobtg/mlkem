@@ -85,22 +85,22 @@ const INV128_MONT: i16 = 512_i16;
 static ZETAS_NEON: [i16; 128] = [
     /*  0 unused */    0,
     /* i=1..127 */
-    1729, 2580, 3289, 2642,  630, 1897,  848, 1062,
-    1919,  193,  797, 2786, 3260,  569, 1746,  296,
-    2447, 1339, 1476, 3046,   56, 2240, 1333, 1426,
-    2094,  535, 2882, 2393, 2879, 1974,  821,  289,
-     331, 3253, 1756, 1197, 2304, 2277, 2055,  650,
-    1977, 2513,  632, 2865,   33, 1320, 1915, 2319,
-    1435,  807,  452, 1438, 2868, 1534, 2402, 2647,
-    2617, 1481,  648, 2474, 3110, 1227,  910,   17,
-    2761,  583, 2649, 1637,  723, 2288, 1100, 1409,
-    2662, 3281,  233,  756, 2156, 3015, 3050, 1703,
-    1651, 2789, 1789, 1847,  952, 1461, 2687,  939,
-    2308, 2437, 2388,  733, 2337,  268,  641, 1584,
-    2298, 2037, 3220,  375, 2549, 2090, 1645, 1063,
-     319, 2773,  757, 2099,  561, 2466, 2594, 2804,
-    1092,  403, 1026, 1143, 2150, 2775,  886, 1722,
-    1212, 1874, 1029, 2110, 2935,  885, 2154,
+     2571,  2970,  1812,  1493,  1422,   287,   202,  3158,
+      622,  1577,   182,   962,  2127,  1855,  1468,   573,
+     2004,   264,   383,  2500,  1458,  1727,  3199,  2648,
+     1017,   732,   608,  1787,   411,  3124,  1758,  1223,
+      652,  2777,  1015,  2036,  1491,  3047,  1785,   516,
+     3321,  3009,  2663,  1711,  2167,   126,  1469,  2476,
+     3239,  3058,   830,   107,  1908,  3082,  2378,  2931,
+      961,  1821,  2604,   448,  2264,   677,  2054,  2226,
+      430,   555,   843,  2078,   871,  1550,   105,   422,
+      587,   177,  3094,  3038,  2869,  1574,  1653,  3083,
+      778,  1159,  3182,  2552,  1483,  2727,  1119,  1739,
+      644,  2457,   349,   418,   329,  3173,  3254,   817,
+     1097,   603,   610,  1322,  2044,  1864,   384,  2114,
+     3193,  1218,  1994,  2455,   220,  2142,  1670,  2144,
+     1799,  2051,   794,  1819,  2475,  2459,   478,  3221,
+     3021,   996,   991,   958,  1869,  1522,  1628,
 ];
 
 /// `INV_ZETAS_NEON[i]` = ζ^(−BitRev7(i)) · R mod q,  stored in GS order
@@ -113,22 +113,22 @@ static ZETAS_NEON: [i16; 128] = [
 /// the table human-readable (forward values).
 #[rustfmt::skip]
 static INV_ZETAS_NEON: [i16; 128] = [
-    2154,  885, 2935, 2110, 1029, 1874, 1212, 1722,
-     886, 2775, 2150, 1143, 1026,  403, 1092, 2804,
-    2594, 2466,  561, 2099,  757, 2773,  319, 1063,
-    1645, 2090, 2549,  375, 3220, 2037, 2298, 1584,
-     641,  268, 2337,  733, 2388, 2437, 2308,  939,
-    2687, 1461,  952, 1847, 1789, 2789, 1651, 1703,
-    3050, 3015, 2156,  756,  233, 3281, 2662, 1409,
-    1100, 2288,  723, 1637, 2649,  583, 2761,   17,
-     910, 1227, 3110, 2474,  648, 1481, 2617, 2647,
-    2402, 1534, 2868, 1438,  452,  807, 1435, 2319,
-    1915, 1320,   33, 2865,  632, 2513, 1977,  650,
-    2055, 2277, 2304, 1197, 1756, 3253,  331,  289,
-     821, 1974, 2879, 2393, 2882,  535, 2094, 1426,
-    1333, 2240,   56, 3046, 1476, 1339, 2447,  296,
-    1746,  569, 3260, 2786,  797,  193, 1919, 1062,
-     848, 1897,  630, 2642, 3289, 2580, 1729,    0,
+     1628,  1522,  1869,   958,   991,   996,  3021,  3221,
+      478,  2459,  2475,  1819,   794,  2051,  1799,  2144,
+     1670,  2142,   220,  2455,  1994,  1218,  3193,  2114,
+      384,  1864,  2044,  1322,   610,   603,  1097,   817,
+     3254,  3173,   329,   418,   349,  2457,   644,  1739,
+     1119,  2727,  1483,  2552,  3182,  1159,   778,  3083,
+     1653,  1574,  2869,  3038,  3094,   177,   587,   422,
+      105,  1550,   871,  2078,   843,   555,   430,  2226,
+     2054,   677,  2264,   448,  2604,  1821,   961,  2931,
+     2378,  3082,  1908,   107,   830,  3058,  3239,  2476,
+     1469,   126,  2167,  1711,  2663,  3009,  3321,   516,
+     1785,  3047,  1491,  2036,  1015,  2777,   652,  1223,
+     1758,  3124,   411,  1787,   608,   732,  1017,  2648,
+     3199,  1727,  1458,  2500,   383,   264,  2004,   573,
+     1468,  1855,  2127,   962,   182,  1577,   622,  3158,
+      202,   287,  1422,  1493,  1812,  2970,  2571,     0,
 ];
 
 /// `GAMMAS_NEON[2*i]` = ζ^(2·BitRev7(i)+1) mod q,  `GAMMAS_NEON[2*i+1]` = its negation.
@@ -256,8 +256,8 @@ unsafe fn montgomery_mul_vec(a: int16x8_t, zeta: int16x8_t) -> int16x8_t {
     // ── Step 4 & 5: prod + k×q  (in 32-bit) ────────────────────────────────
     let q_vec: int16x8_t = vdupq_n_s16(Q);
     // Accumulate k×Q into the existing a×zeta products.
-    let acc_lo: int32x4_t = vmlal_s16(prod_lo, vget_low_s16(k), vget_low_s16(q_vec));
-    let acc_hi: int32x4_t = vmlal_high_s16(prod_hi, k, q_vec);
+    let acc_lo: int32x4_t = vmlsl_s16(prod_lo, vget_low_s16(k), vget_low_s16(q_vec));
+    let acc_hi: int32x4_t = vmlsl_high_s16(prod_hi, k, q_vec);
 
     // ── Step 6: arithmetic right-shift by 16 → narrow ───────────────────────
     let res_lo: int32x4_t = vshrq_n_s32(acc_lo, 16);
@@ -539,59 +539,47 @@ unsafe fn ntt_inner(poly: &mut Poly) {
 
     // ══════════════════════════════════════════════════════════════════════════
     // Layer 6: len = 2,  64 blocks
-    // Butterfly pairs are adjacent: (lane0,lane1),(lane2,lane3),(lane4,lane5),(lane6,lane7)
-    // One int16x8_t holds 8 coefficients = 4 pairs needing 4 distinct zetas.
-    // Process one vector (8 coefficients) per iteration: 256/8 = 32 iters × 4 zetas
-    // BUT that is 128 zetas (wrong). Instead process 2 vectors per iter:
-    // 256/8 = 32 pairs-of-vectors? No: 256 coeffs / 16 per iter = 16 iters × 4 zetas = 64 ✓
-    //
-    // Each iteration: load 16 coefficients (2 × int16x8_t), apply CT butterfly
-    // to each 8-coeff block independently using 4 zetas each.
+    // Butterfly pairs are adjacent: (lane0,lane1) with (lane2,lane3), etc.
+    // Treating `v` as int32x4_t `[L0, L1, L2, L3]`, the "a" halves are L0, L2
+    // and the "b" halves are L1, L3.
     // ══════════════════════════════════════════════════════════════════════════
     let mut start = 0usize;
     while start < 256 {
-        // 4 zetas for this 16-element block
         let z0 = ZETAS_NEON[zeta_idx];
         let z1 = ZETAS_NEON[zeta_idx + 1];
         let z2 = ZETAS_NEON[zeta_idx + 2];
         let z3 = ZETAS_NEON[zeta_idx + 3];
         zeta_idx += 4;
 
-        // Build zeta vector: [z0,z0,z1,z1,z2,z2,z3,z3]
         let zeta_arr: [i16; 8] = [z0, z0, z1, z1, z2, z2, z3, z3];
         let zeta_vec: int16x8_t = vld1q_s16(zeta_arr.as_ptr());
 
-        // Process first 8-coeff vector (4 pairs, same 4 zetas)
         let v0 = vld1q_s16(p.add(start));
-        // a = even lanes (positions 0,2,4,6), b = odd lanes (positions 1,3,5,7)
-        let a0_uzp = vuzp1q_s16(v0, v0);  // even lanes duplicated to both halves
-        let b0_uzp = vuzp2q_s16(v0, v0);  // odd lanes duplicated to both halves
-        let a0_4: int16x4_t = vget_low_s16(a0_uzp);
-        let b0_4: int16x4_t = vget_low_s16(b0_uzp);
-        let a0_8: int16x8_t = vcombine_s16(a0_4, a0_4);
-        let b0_8: int16x8_t = vcombine_s16(b0_4, b0_4);
-        let zeta_lo: int16x4_t = vget_low_s16(zeta_vec);
-        let zeta_lo8: int16x8_t = vcombine_s16(zeta_lo, zeta_lo);
-        let t0 = montgomery_mul_vec(b0_8, zeta_lo8);
-        let a0_new: int16x4_t = vget_low_s16(vaddq_s16(a0_8, t0));
-        let b0_new: int16x4_t = vget_low_s16(vsubq_s16(a0_8, t0));
-        // Re-interleave [a0,b0,a1,b1,a2,b2,a3,b3]
-        let out0: int16x8_t = vzip1q_s16(vcombine_s16(a0_new, a0_new), vcombine_s16(b0_new, b0_new));
-        vst1q_s16(p.add(start), out0);
-
-        // Process second 8-coeff vector (next 4 pairs, same 4 zetas)
         let v1 = vld1q_s16(p.add(start + 8));
-        let a1_uzp = vuzp1q_s16(v1, v1);
-        let b1_uzp = vuzp2q_s16(v1, v1);
-        let a1_4: int16x4_t = vget_low_s16(a1_uzp);
-        let b1_4: int16x4_t = vget_low_s16(b1_uzp);
-        let a1_8: int16x8_t = vcombine_s16(a1_4, a1_4);
-        let b1_8: int16x8_t = vcombine_s16(b1_4, b1_4);
-        let t1 = montgomery_mul_vec(b1_8, zeta_lo8);
-        let a1_new: int16x4_t = vget_low_s16(vaddq_s16(a1_8, t1));
-        let b1_new: int16x4_t = vget_low_s16(vsubq_s16(a1_8, t1));
-        let out1: int16x8_t = vzip1q_s16(vcombine_s16(a1_new, a1_new), vcombine_s16(b1_new, b1_new));
-        vst1q_s16(p.add(start + 8), out1);
+
+        let v0_32 = vreinterpretq_s32_s16(v0);
+        let v1_32 = vreinterpretq_s32_s16(v1);
+
+        // Extract a_vec_32 = [L0, L2, L4, L6] and b_vec_32 = [L1, L3, L5, L7]
+        let a_vec_32 = vuzp1q_s32(v0_32, v1_32);
+        let b_vec_32 = vuzp2q_s32(v0_32, v1_32);
+
+        let a_vec = vreinterpretq_s16_s32(a_vec_32);
+        let b_vec = vreinterpretq_s16_s32(b_vec_32);
+
+        let t = montgomery_mul_vec(b_vec, zeta_vec);
+        let a_new = vaddq_s16(a_vec, t);
+        let b_new = vsubq_s16(a_vec, t);
+
+        let a_new_32 = vreinterpretq_s32_s16(a_new);
+        let b_new_32 = vreinterpretq_s32_s16(b_new);
+
+        // Re-interleave to out0_32 = [L0', L1', L2', L3'] and out1_32 = [L4', L5', L6', L7']
+        let out0_32 = vzip1q_s32(a_new_32, b_new_32);
+        let out1_32 = vzip2q_s32(a_new_32, b_new_32);
+
+        vst1q_s16(p.add(start), vreinterpretq_s16_s32(out0_32));
+        vst1q_s16(p.add(start + 8), vreinterpretq_s16_s32(out1_32));
 
         start += 16;
     }
@@ -638,38 +626,46 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
 
     // ══════════════════════════════════════════════════════════════════════════
     // Layer 0 (GS, len=2): 64 blocks
-    // Each 8-element window holds 2 blocks, each needing 1 zeta → 2 zetas per 8 elements.
-    // 32 iters × 2 zetas = 64 total ✓
-    // Zeta layout per 8 elements: [z0,z0,z0,z0, z1,z1,z1,z1]
-    // (Each zeta covers 4 lanes = 2 butterfly pairs within one block)
+    // Uses the same 32-bit unzip trick as forward Layer 6 to separate pairs
+    // with a stride of 2 elements.
     // ══════════════════════════════════════════════════════════════════════════
     let mut start = 0usize;
     while start < 256 {
         let z0 = INV_ZETAS_NEON[zeta_idx];
         let z1 = INV_ZETAS_NEON[zeta_idx + 1];
-        zeta_idx += 2;
+        let z2 = INV_ZETAS_NEON[zeta_idx + 2];
+        let z3 = INV_ZETAS_NEON[zeta_idx + 3];
+        zeta_idx += 4;
 
-        // Build zeta8: [z0,z0,z0,z0, z1,z1,z1,z1]
-        let zeta_lo: int16x4_t = vdup_n_s16(z0);
-        let zeta_hi: int16x4_t = vdup_n_s16(z1);
-        let zeta8: int16x8_t = vcombine_s16(zeta_lo, zeta_hi);
+        let zeta_arr: [i16; 8] = [z0, z0, z1, z1, z2, z2, z3, z3];
+        let zeta_vec: int16x8_t = vld1q_s16(zeta_arr.as_ptr());
 
-        let v = vld1q_s16(p.add(start));
-        // a = even lanes (positions 0,2,4,6 in the window), b = odd lanes (1,3,5,7)
-        let a4: int16x4_t = vget_low_s16(vuzp1q_s16(v, v));
-        let b4: int16x4_t = vget_low_s16(vuzp2q_s16(v, v));
-        let a8: int16x8_t = vcombine_s16(a4, a4);
-        let b8: int16x8_t = vcombine_s16(b4, b4);
+        let v0 = vld1q_s16(p.add(start));
+        let v1 = vld1q_s16(p.add(start + 8));
 
-        let sum = vaddq_s16(a8, b8);
-        let diff_mont = montgomery_mul_vec(vsubq_s16(a8, b8), zeta8);
+        let v0_32 = vreinterpretq_s32_s16(v0);
+        let v1_32 = vreinterpretq_s32_s16(v1);
 
-        // Re-interleave: sum lanes go to even positions, diff_mont to odd positions
-        let out: int16x8_t = vzip1q_s16(sum, diff_mont);
-        vst1q_s16(p.add(start), out);
-        start += 8;
+        let a_vec_32 = vuzp1q_s32(v0_32, v1_32);
+        let b_vec_32 = vuzp2q_s32(v0_32, v1_32);
+
+        let a_vec = vreinterpretq_s16_s32(a_vec_32);
+        let b_vec = vreinterpretq_s16_s32(b_vec_32);
+
+        let sum = vaddq_s16(a_vec, b_vec);
+        let diff_mont = montgomery_mul_vec(vsubq_s16(b_vec, a_vec), zeta_vec);
+
+        let sum_32 = vreinterpretq_s32_s16(sum);
+        let diff_32 = vreinterpretq_s32_s16(diff_mont);
+
+        let out0_32 = vzip1q_s32(sum_32, diff_32);
+        let out1_32 = vzip2q_s32(sum_32, diff_32);
+
+        vst1q_s16(p.add(start), vreinterpretq_s16_s32(out0_32));
+        vst1q_s16(p.add(start + 8), vreinterpretq_s16_s32(out1_32));
+
+        start += 16;
     }
-
     // ══════════════════════════════════════════════════════════════════════════
     // Layer 1 (GS, len=4): 32 blocks  (two adjacent 8-element vectors per pass)
     // ══════════════════════════════════════════════════════════════════════════
@@ -690,7 +686,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         let b_vec: int16x8_t = vcombine_s16(vget_high_s16(ab0), vget_high_s16(ab1));
 
         let sum = vaddq_s16(a_vec, b_vec);
-        let diff_mont = montgomery_mul_vec(vsubq_s16(a_vec, b_vec), zeta_vec);
+        let diff_mont = montgomery_mul_vec(vsubq_s16(b_vec, a_vec), zeta_vec);
 
         let out0: int16x8_t = vcombine_s16(vget_low_s16(sum), vget_low_s16(diff_mont));
         let out1: int16x8_t = vcombine_s16(vget_high_s16(sum), vget_high_s16(diff_mont));
