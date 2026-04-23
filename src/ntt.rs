@@ -862,23 +862,21 @@ pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     unsafe { mul_ntt_inner(a, b, &mut out) }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // Scalar base-case multiply in Montgomery domain
+        // Scalar base-case multiply
         let mut i = 0;
+        let q = Q as i32;
         while i < 256 {
-            let a0 = a.0[i];
-            let a1 = a.0[i+1];
-            let b0 = b.0[i];
-            let b1 = b.0[i+1];
-            let gamma = GAMMAS_NEON[i]; // Already in Montgomery form
+            let a0 = a.0[i] as i32;
+            let a1 = a.0[i+1] as i32;
+            let b0 = b.0[i] as i32;
+            let b1 = b.0[i+1] as i32;
+            let gamma = RAW_GAMMAS_NEON[i] as i32;
 
-            let a0b0 = scalar_ref::mont_reduce(a0 as i32 * b0 as i32);
-            let a1b1 = scalar_ref::mont_reduce(a1 as i32 * b1 as i32);
-            let a1b1_gamma = scalar_ref::mont_reduce(a1b1 as i32 * gamma as i32);
-            out.0[i] = crate::reduce::add(a0b0, a1b1_gamma);
-
-            let a0b1 = scalar_ref::mont_reduce(a0 as i32 * b1 as i32);
-            let a1b0 = scalar_ref::mont_reduce(a1 as i32 * b0 as i32);
-            out.0[i+1] = crate::reduce::add(a0b1, a1b0);
+            let a1b1 = (a1 * b1) % q;
+            let c0 = (a0 * b0 + a1b1 * gamma) % q;
+            let c1 = (a0 * b1 + a1 * b0) % q;
+            out.0[i]   = ((c0 % q + q) % q) as i16;
+            out.0[i+1] = ((c1 % q + q) % q) as i16;
             i += 2;
         }
     }
@@ -891,6 +889,10 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     let pa = a.0.as_ptr();
     let pb = b.0.as_ptr();
     let po = out.0.as_mut_ptr();
+
+    // R^2 mod q = 1353. We use this to scale operands back out of the
+    // Montgomery domain (mont_mul(x, R^2) = x * R^2 * R^-1 = x * R).
+    let r2 = vdupq_n_s16(1353);
 
     // Process 8 basemul pairs (= 16 coefficients) per iteration.
     // GAMMAS_NEON layout: [γ₀, −γ₀, γ₁, −γ₁, …] in pairs of 2.
@@ -915,12 +917,16 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
         let a1b1: int16x8_t = montgomery_mul_vec(a1, b1);
         let a1b1_gamma: int16x8_t = montgomery_mul_vec(a1b1, gamma);
         
-        let c0: int16x8_t = vaddq_s16(a0b0, a1b1_gamma);
+        let c0_rinv: int16x8_t = vaddq_s16(a0b0, a1b1_gamma);
 
         // c1 = a0·b1 + a1·b0
         let a0b1: int16x8_t = montgomery_mul_vec(a0, b1);
         let a1b0: int16x8_t = montgomery_mul_vec(a1, b0);
-        let c1: int16x8_t = vaddq_s16(a0b1, a1b0);
+        let c1_rinv: int16x8_t = vaddq_s16(a0b1, a1b0);
+
+        // Convert back to normal form by multiplying by R^2
+        let c0 = montgomery_mul_vec(c0_rinv, r2);
+        let c1 = montgomery_mul_vec(c1_rinv, r2);
 
         // Re-interleave c0 (even) and c1 (odd) and store
         vst2q_s16(po.add(i), int16x8x2_t(c0, c1));
