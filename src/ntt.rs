@@ -55,9 +55,8 @@ pub const Q: i16 = 3329;
 /// −q⁻¹ mod 2¹⁶  (for Montgomery reduction)
 const Q_INV: i16 = -3327_i16;
 /// 128⁻¹ · R mod q  (final scaling in NTT⁻¹, simultaneously converts back from
-/// Montgomery domain — the Montgomery multiply by this constant outputs a value in
-/// the standard ℤ_q domain).
-const INV128_MONT: i16 = 512_i16;
+/// Montgomery domain). 128⁻¹ mod q = 3303, and 3303 * 2¹⁶ mod q = 512.
+const INV128_MONT: i16 = 512;
 
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -131,12 +130,9 @@ static INV_ZETAS_NEON: [i16; 128] = [
       202,   287,  1422,  1493,  1812,  2970,  2571,     0,
 ];
 
-/// `GAMMAS_NEON[2*i]` = ζ^(2·BitRev7(i)+1) mod q,  `GAMMAS_NEON[2*i+1]` = its negation.
-/// Used in pointwise base-case multiplication (Algorithm 12).
-/// Layout: [γ₀, −γ₀, γ₁, −γ₁, …, γ₁₂₇, −γ₁₂₇]  — 128 pairs = 256 i16 values total.
-/// Source: FIPS 203 Appendix A, second table (ζ^(2·BitRev7(i)+1) mod q pairs).
+/// Raw gamma values (not in Montgomery form), from FIPS 203 Appendix A.
 #[rustfmt::skip]
-static GAMMAS_NEON: [i16; 256] = [
+const RAW_GAMMAS_NEON: [i16; 256] = [
     // pairs i=0..3
       17,  -17, 2761,-2761,  583, -583, 2649,-2649,
     // pairs i=4..7
@@ -202,6 +198,25 @@ static GAMMAS_NEON: [i16; 256] = [
     // pairs i=124..127
    -2110, 2110,-2935, 2935, -885,  885,-2154, 2154,
 ];
+
+/// `GAMMAS_NEON[i]` = `ζ^(2·BitRev7(i)+1) · R mod q`.
+/// Used in pointwise base-case multiplication (Algorithm 12).
+/// These are pre-converted to Montgomery form at compile time.
+static GAMMAS_NEON: [i16; 256] = {
+    let mut out = [0i16; 256];
+    let mut i = 0;
+    while i < 256 {
+        let x = RAW_GAMMAS_NEON[i] as i32;
+        // R mod 3329 = 2285
+        let r = (x * 2285).rem_euclid(3329);
+        out[i] = r as i16;
+        i += 1;
+    }
+    out
+};
+
+
+
 
 #[cfg(target_arch = "aarch64")]
 mod simd_helpers_marker {} // aarch64-only code follows
@@ -783,6 +798,16 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         }
     }
 
+    // Barrett reduce
+    {
+        let mut j = 0usize;
+        while j < 256 {
+            let v = vld1q_s16(p.add(j));
+            vst1q_s16(p.add(j), barrett_reduce_vec(v));
+            j += 8;
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     // Layer 6 (GS, len=128): 1 block
     // ══════════════════════════════════════════════════════════════════════════
@@ -837,22 +862,23 @@ pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     unsafe { mul_ntt_inner(a, b, &mut out) }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // scalar base-case multiply
-        use crate::reduce;
+        // Scalar base-case multiply in Montgomery domain
         let mut i = 0;
         while i < 256 {
-            let a0 = a.0[i] as i32;
-            let a1 = a.0[i+1] as i32;
-            let b0 = b.0[i] as i32;
-            let b1 = b.0[i+1] as i32;
-            let gamma = GAMMAS_NEON[i] as i32;
-            // c0 = a0*b0 + a1*b1*gamma (mod q)
-            let c0 = scalar_ref::mont_reduce(a0 * b0) as i32
-                   + scalar_ref::mont_reduce(scalar_ref::mont_reduce(a1 * b1) as i32 * gamma) as i32;
-            let c1 = scalar_ref::mont_reduce(a0 * b1) as i32
-                   + scalar_ref::mont_reduce(a1 * b0) as i32;
-            out.0[i]   = reduce::mod_q(c0);
-            out.0[i+1] = reduce::mod_q(c1);
+            let a0 = a.0[i];
+            let a1 = a.0[i+1];
+            let b0 = b.0[i];
+            let b1 = b.0[i+1];
+            let gamma = GAMMAS_NEON[i]; // Already in Montgomery form
+
+            let a0b0 = scalar_ref::mont_reduce(a0 as i32 * b0 as i32);
+            let a1b1 = scalar_ref::mont_reduce(a1 as i32 * b1 as i32);
+            let a1b1_gamma = scalar_ref::mont_reduce(a1b1 as i32 * gamma as i32);
+            out.0[i] = crate::reduce::add(a0b0, a1b1_gamma);
+
+            let a0b1 = scalar_ref::mont_reduce(a0 as i32 * b1 as i32);
+            let a1b0 = scalar_ref::mont_reduce(a1 as i32 * b0 as i32);
+            out.0[i+1] = crate::reduce::add(a0b1, a1b0);
             i += 2;
         }
     }
@@ -884,19 +910,11 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
         // Load 8 γ values and 8 −γ values (interleaved in GAMMAS_NEON)
         let gam_pairs = vld2q_s16(GAMMAS_NEON.as_ptr().add(gi));
         let gamma: int16x8_t = gam_pairs.0;     // [γ₀, γ₁, …, γ₇]
-        // neg_gamma = gam_pairs.1 but we don't actually need it explicitly —
-        // a1·b1·γ uses `gamma` directly; the subtraction is handled by sign.
 
-        // c0 = a0·b0 + a1·b1·γ
-        //    = MontMul(a0, b0) + MontMul(a1·b1, γ)
-        // We can't accumulate before reducing, so do two Montgomery multiplies
-        // and add.  Both outputs are in (−q, q), so the sum is in (−2q, 2q) ✓
         let a0b0: int16x8_t = montgomery_mul_vec(a0, b0);
         let a1b1: int16x8_t = montgomery_mul_vec(a1, b1);
         let a1b1_gamma: int16x8_t = montgomery_mul_vec(a1b1, gamma);
-        // Note: a1b1 is already R⁻¹-scaled; multiplying by γ (not in Montgomery
-        // form) gives a1·b1·γ·R⁻¹.  Combined with a0b0 = a0·b0·R⁻¹, the result
-        // c0 = (a0·b0 + a1·b1·γ)·R⁻¹ is consistently scaled. ✓
+        
         let c0: int16x8_t = vaddq_s16(a0b0, a1b1_gamma);
 
         // c1 = a0·b1 + a1·b0
@@ -919,6 +937,7 @@ mod scalar_ref {
     use super::Q;
 
     /// Montgomery reduction: (a · R⁻¹) mod q
+    #[allow(dead_code)]
     pub fn mont_reduce(a: i32) -> i16 {
         const QINV: i32 = -3327; // −q⁻¹ mod R, R = 2¹⁶
         let m = ((a as i32).wrapping_mul(QINV)) as i16;
@@ -927,6 +946,7 @@ mod scalar_ref {
     }
 
     /// Barrett reduction to [0, q)
+    #[allow(dead_code)]
     pub fn barrett_reduce(a: i16) -> i16 {
         let v: i32 = 20159;
         let t = ((a as i32 * v) >> 26) as i16;
@@ -938,6 +958,7 @@ mod scalar_ref {
     }
 
     /// Scalar reference NTT (FIPS 203 Algorithm 9, plain arithmetic)
+    #[allow(dead_code)]
     pub fn ntt_ref(f: &[i16; 256]) -> [i16; 256] {
         const Q: i32 = 3329;
         let mut f = *f;
@@ -975,6 +996,7 @@ mod scalar_ref {
     }
 
     /// Scalar reference NTT⁻¹ (FIPS 203 Algorithm 10, plain arithmetic)
+    #[allow(dead_code)]
     pub fn inv_ntt_ref(f: &[i16; 256]) -> [i16; 256] {
         const Q: i32 = 3329;
         let mut f = *f;

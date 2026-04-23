@@ -1,7 +1,6 @@
 use crate::params::MlKem768;
 use crate::poly::Poly;
 use crate::hash::prf_shake256;
-use crate::ntt;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake128;
 
@@ -10,7 +9,7 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
     let mut coeffs = [0i16; MlKem768::N];
     let mut hasher = Shake128::default();
     hasher.update(seed);
-    hasher.update(&[i, j]);
+    hasher.update(&[j, i]); // FIPS 203 requires (rho || j || i)
     let mut reader = hasher.finalize_xof();
 
     // SHAKE128 rate is 168 bytes; keep a small carry-over buffer for leftover bytes.
@@ -79,4 +78,27 @@ pub fn sample_poly_cbd_eta(seed: &[u8; 32], nonce: u8, eta: usize) -> Poly {
     }
 
     Poly(coeffs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sample_ntt_bounds() {
+        let seed = [0xAA; 32];
+        let poly = sample_ntt(&seed, 0, 0);
+        for &coef in poly.0.iter() {
+            assert!(coef >= 0 && coef < MlKem768::Q as i16, "NTT sample out of bounds: {}", coef);
+        }
+    }
+
+    #[test]
+    fn test_sample_poly_cbd_bounds() {
+        let seed = [0xBB; 32];
+        let poly = sample_poly_cbd_eta(&seed, 0, MlKem768::ETA2);
+        for &coef in poly.0.iter() {
+            assert!(coef >= -2 && coef <= 2, "CBD sample out of bounds: {}", coef);
+        }
+    }
 }
