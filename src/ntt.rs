@@ -132,7 +132,7 @@ static INV_ZETAS_NEON: [i16; 128] = [
 
 /// Raw gamma values (not in Montgomery form), from FIPS 203 Appendix A.
 #[rustfmt::skip]
-const RAW_GAMMAS_NEON: [i16; 256] = [
+const RAW_GAMMAS_NEON: [i16; 128] = [
     // pairs i=0..3
       17,  -17, 2761,-2761,  583, -583, 2649,-2649,
     // pairs i=4..7
@@ -165,47 +165,15 @@ const RAW_GAMMAS_NEON: [i16; 256] = [
     1722,-1722, 1212,-1212, 1874,-1874, 1029,-1029,
     // pairs i=60..63
     2110,-2110, 2935,-2935,  885, -885, 2154,-2154,
-    // pairs i=64..67  (second half of FIPS 203 Appendix A gamma table)
-     -17,   17,-2761, 2761, -583,  583,-2649, 2649,
-    // pairs i=68..71
-   -1637, 1637, -723,  723,-2288, 2288,-1100, 1100,
-    // pairs i=72..75
-   -1409, 1409,-2662, 2662,-3281, 3281, -233,  233,
-    // pairs i=76..79
-    -756,  756,-2156, 2156,-3015, 3015,-3050, 3050,
-    // pairs i=80..83
-   -1703, 1703,-1651, 1651,-2789, 2789,-1789, 1789,
-    // pairs i=84..87
-   -1847, 1847, -952,  952,-1461, 1461,-2687, 2687,
-    // pairs i=88..91
-    -939,  939,-2308, 2308,-2437, 2437,-2388, 2388,
-    // pairs i=92..95
-    -733,  733,-2337, 2337, -268,  268, -641,  641,
-    // pairs i=96..99
-   -1584, 1584,-2298, 2298,-2037, 2037,-3220, 3220,
-    // pairs i=100..103
-    -375,  375,-2549, 2549,-2090, 2090,-1645, 1645,
-    // pairs i=104..107
-   -1063, 1063, -319,  319,-2773, 2773, -757,  757,
-    // pairs i=108..111
-   -2099, 2099, -561,  561,-2466, 2466,-2594, 2594,
-    // pairs i=112..115
-   -2804, 2804,-1092, 1092, -403,  403,-1026, 1026,
-    // pairs i=116..119
-   -1143, 1143,-2150, 2150,-2775, 2775, -886,  886,
-    // pairs i=120..123
-   -1722, 1722,-1212, 1212,-1874, 1874,-1029, 1029,
-    // pairs i=124..127
-   -2110, 2110,-2935, 2935, -885,  885,-2154, 2154,
 ];
 
 /// `GAMMAS_NEON[i]` = `ζ^(2·BitRev7(i)+1) · R mod q`.
 /// Used in pointwise base-case multiplication (Algorithm 12).
 /// These are pre-converted to Montgomery form at compile time.
-static GAMMAS_NEON: [i16; 256] = {
-    let mut out = [0i16; 256];
+static GAMMAS_NEON: [i16; 128] = {
+    let mut out = [0i16; 128];
     let mut i = 0;
-    while i < 256 {
+    while i < 128 {
         let x = RAW_GAMMAS_NEON[i] as i32;
         // R mod 3329 = 2285
         let r = (x * 2285).rem_euclid(3329);
@@ -894,11 +862,9 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     // Montgomery domain (mont_mul(x, R^2) = x * R^2 * R^-1 = x * R).
     let r2 = vdupq_n_s16(1353);
 
-    // Process 8 basemul pairs (= 16 coefficients) per iteration.
-    // GAMMAS_NEON layout: [γ₀, −γ₀, γ₁, −γ₁, …] in pairs of 2.
-    // Loading 16 entries gives us 8 (γ, −γ) pairs.
+    // Process 8 base-case multiplications (= 16 coefficients) per iteration.
     let mut i = 0usize; // coefficient index, step 16
-    let mut gi = 0usize; // GAMMAS_NEON index, step 16
+    let mut gi = 0usize; // GAMMAS_NEON index, step 8
 
     while i < 256 {
         // De-interleave a and b into even (index 2k) and odd (index 2k+1) lanes
@@ -909,9 +875,8 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
         let b0: int16x8_t = b_pairs.0;
         let b1: int16x8_t = b_pairs.1;
 
-        // Load 8 γ values and 8 −γ values (interleaved in GAMMAS_NEON)
-        let gam_pairs = vld2q_s16(GAMMAS_NEON.as_ptr().add(gi));
-        let gamma: int16x8_t = gam_pairs.0;     // [γ₀, γ₁, …, γ₇]
+        // Load 8 γ values (contiguous)
+        let gamma: int16x8_t = vld1q_s16(GAMMAS_NEON.as_ptr().add(gi));
 
         let a0b0: int16x8_t = montgomery_mul_vec(a0, b0);
         let a1b1: int16x8_t = montgomery_mul_vec(a1, b1);
@@ -932,7 +897,7 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
         vst2q_s16(po.add(i), int16x8x2_t(c0, c1));
 
         i += 16;
-        gi += 16;
+        gi += 8;
     }
 }
 
