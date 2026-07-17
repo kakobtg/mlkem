@@ -3,12 +3,21 @@ use crate::{Ek, Ct, MlKemError};
 use crate::poly::{Poly, PolyVec};
 use crate::{sample, encode, ntt};
 use crate::reduce;
+use sha3::{Digest, Sha3_512};
 
 pub const SK_PKE_BYTES: usize = MlKem768::DK_BYTES - MlKem768::EK_BYTES - 64;
 
-pub fn keygen(rho: &[u8; 32], sigma: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
+pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
     let mut ek = [0u8; MlKem768::EK_BYTES];
     let mut sk = [0u8; SK_PKE_BYTES];
+
+    // FIPS 203, Algorithm 13, Step 1: (ρ, σ) ← G(d)
+    let mut hasher = Sha3_512::new();
+    hasher.update(d);
+    let g_out = hasher.finalize();
+
+    let rho: &[u8; 32] = g_out[0..32].try_into().unwrap();
+    let sigma: &[u8; 32] = g_out[32..64].try_into().unwrap();
 
     // sample secret s and error e using sigma
     let mut s = [Poly::zero(); MlKem768::K];
@@ -221,17 +230,17 @@ mod tests {
     #[test]
     fn test_pke_roundtrip_isolated() {
         let mut rng = rand::thread_rng();
-        let mut rho = [0u8; 32];
-        let mut sigma = [0u8; 32];
+        let mut d = [0u8; 32];
+        let mut z = [0u8; 32];
         let mut coins = [0u8; 32];
         let mut msg = [0u8; 32];
         
-        rng.fill_bytes(&mut rho);
-        rng.fill_bytes(&mut sigma);
+        rng.fill_bytes(&mut d);
+        rng.fill_bytes(&mut z);
         rng.fill_bytes(&mut coins);
         rng.fill_bytes(&mut msg);
 
-        let (ek, dk) = keygen(&rho, &sigma);
+        let (ek, dk) = keygen(&d);
         let ct = encrypt(&ek, &msg, &coins).unwrap();
         let dec_msg = decrypt(&dk, &ct).unwrap();
 

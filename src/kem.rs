@@ -37,7 +37,7 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     let (rho, sigma_rest) = util::split_at_32(&g_out, 0);
     let mut sigma = [0u8; 32];
     sigma.copy_from_slice(&sigma_rest[..32]);
-    let (ek, sk_pke) = pke::keygen(&rho, &sigma);
+    let (ek, sk_pke) = pke::keygen(&rho);
 
     let h_ek = hash::h_sha3_256(&ek);
 

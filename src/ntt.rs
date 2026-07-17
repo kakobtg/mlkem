@@ -832,19 +832,15 @@ pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     {
         // Scalar base-case multiply
         let mut i = 0;
-        let q = Q as i32;
         while i < 256 {
             let a0 = a.0[i] as i32;
             let a1 = a.0[i+1] as i32;
             let b0 = b.0[i] as i32;
             let b1 = b.0[i+1] as i32;
-            let gamma = RAW_GAMMAS_NEON[i] as i32;
-
-            let a1b1 = (a1 * b1) % q;
-            let c0 = (a0 * b0 + a1b1 * gamma) % q;
-            let c1 = (a0 * b1 + a1 * b0) % q;
-            out.0[i]   = ((c0 % q + q) % q) as i16;
-            out.0[i+1] = ((c1 % q + q) % q) as i16;
+            let gamma = RAW_GAMMAS_NEON[i / 2] as i32;
+            let a1b1_gamma = crate::reduce::mod_q(a1 * b1) as i32 * gamma;
+            out.0[i]   = crate::reduce::mod_q(a0 * b0 + a1b1_gamma);
+            out.0[i+1] = crate::reduce::mod_q(a0 * b1 + a1 * b0);
             i += 2;
         }
     }
