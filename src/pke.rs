@@ -35,22 +35,23 @@ pub fn keygen(rho: &[u8; 32], sigma: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
         }
     }
 
-    // compute t = invNTT(A_hat * s_hat) + e
-    let mut t = [Poly::zero(); MlKem768::K];
+    // compute t_hat = A_hat * s_hat + NTT(e)
+    let mut t_hat = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
         let mut acc = ntt::mul_ntt(&a_hat[i][0], &s_hat[0]);
         for j in 1..MlKem768::K {
             acc = acc.add(&ntt::mul_ntt(&a_hat[i][j], &s_hat[j]));
         }
-        t[i] = ntt::inv_ntt(acc).add(&e[i]);
-        for coef in t[i].0.iter_mut() {
+        let e_hat = ntt::ntt(e[i]);
+        t_hat[i] = acc.add(&e_hat);
+        for coef in t_hat[i].0.iter_mut() {
             *coef = reduce::mod_q(*coef as i32);
         }
     }
 
-    // encode ek = t || rho
+    // encode ek = t_hat || rho
     let mut off = 0;
-    for poly in t.iter() {
+    for poly in t_hat.iter() {
         encode::byte_encode::<12>(poly, &mut ek[off..off + MlKem768::POLY_BYTES_12]);
         off += MlKem768::POLY_BYTES_12;
     }
@@ -85,17 +86,8 @@ pub fn parse_ek(_ek: &Ek) -> Result<(PolyVec, [u8; 32]), MlKemError> {
 
 /// PKE.Encrypt (internal): takes message poly and coins
 pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemError> {
-    // 1) parse ek -> (t_hat, rho)
-    let (t_vec, rho) = parse_ek(_ek)?;
-
-    // precompute NTT(t)
-    let mut t_hat_vec = [Poly::zero(); MlKem768::K];
-    for i in 0..MlKem768::K {
-        t_hat_vec[i] = ntt::ntt(t_vec[i]);
-        for coef in t_hat_vec[i].0.iter_mut() {
-            *coef = reduce::mod_q(*coef as i32);
-        }
-    }
+    // 1) parse ek -> (t_hat_vec, rho)
+    let (t_hat_vec, rho) = parse_ek(_ek)?;
 
     // 2) generate A_hat from rho via SampleNTT
     let mut a_hat = [[Poly::zero(); MlKem768::K]; MlKem768::K];
@@ -117,6 +109,9 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     let mut r_hat = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
         r_hat[i] = ntt::ntt(r[i]);
+        for coef in r_hat[i].0.iter_mut() {
+            *coef = reduce::mod_q(*coef as i32);
+        }
     }
 
     let mut u = [Poly::zero(); MlKem768::K];
@@ -124,6 +119,9 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
         let mut acc = ntt::mul_ntt(&a_hat[0][i], &r_hat[0]);
         for j in 1..MlKem768::K {
             acc = acc.add(&ntt::mul_ntt(&a_hat[j][i], &r_hat[j]));
+        }
+        for coef in acc.0.iter_mut() {
+            *coef = reduce::mod_q(*coef as i32);
         }
         u[i] = ntt::inv_ntt(acc).add(&e1[i]);
         for coef in u[i].0.iter_mut() {
@@ -135,6 +133,9 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     let mut v_acc = ntt::mul_ntt(&t_hat_vec[0], &r_hat[0]);
     for j in 1..MlKem768::K {
         v_acc = v_acc.add(&ntt::mul_ntt(&t_hat_vec[j], &r_hat[j]));
+    }
+    for coef in v_acc.0.iter_mut() {
+        *coef = reduce::mod_q(*coef as i32);
     }
     let mut v = ntt::inv_ntt(v_acc).add(&e2);
     for coef in v.0.iter_mut() {
@@ -185,11 +186,17 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
     for i in 0..MlKem768::K {
         let u_poly = encode::decompress::<{ MlKem768::DU }>(&u_comp[i]);
         u_hat[i] = ntt::ntt(u_poly);
+        for coef in u_hat[i].0.iter_mut() {
+            *coef = reduce::mod_q(*coef as i32);
+        }
     }
 
     let mut acc = ntt::mul_ntt(&s_hat_vec[0], &u_hat[0]);
     for j in 1..MlKem768::K {
         acc = acc.add(&ntt::mul_ntt(&s_hat_vec[j], &u_hat[j]));
+    }
+    for coef in acc.0.iter_mut() {
+        *coef = reduce::mod_q(*coef as i32);
     }
     let v_poly = encode::decompress::<{ MlKem768::DV }>(&v_comp);
     let m_poly = v_poly.sub(&ntt::inv_ntt(acc));
@@ -204,4 +211,30 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
     }
 
     Ok(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::RngCore;
+
+    #[test]
+    fn test_pke_roundtrip_isolated() {
+        let mut rng = rand::thread_rng();
+        let mut rho = [0u8; 32];
+        let mut sigma = [0u8; 32];
+        let mut coins = [0u8; 32];
+        let mut msg = [0u8; 32];
+        
+        rng.fill_bytes(&mut rho);
+        rng.fill_bytes(&mut sigma);
+        rng.fill_bytes(&mut coins);
+        rng.fill_bytes(&mut msg);
+
+        let (ek, dk) = keygen(&rho, &sigma);
+        let ct = encrypt(&ek, &msg, &coins).unwrap();
+        let dec_msg = decrypt(&dk, &ct).unwrap();
+
+        assert_eq!(msg, dec_msg, "Core PKE Encrypt/Decrypt roundtrip failed!");
+    }
 }

@@ -11,7 +11,17 @@ pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
     let mask: u64 = (1u64 << D) - 1;
 
     for &coef in p.0.iter() {
-        acc |= ((coef as u16 as u64) & mask) << bits;
+        let mut c = coef;
+        
+        // For D=12, Kyber requires coefficients modulo Q strictly in [0, Q)
+        if D == 12 {
+            c = c % (MlKem768::Q as i16);
+            if c < 0 {
+                c += MlKem768::Q as i16;
+            }
+        }
+        
+        acc |= ((c as u16 as u64) & mask) << bits;
         bits += D;
 
         while bits >= 8 {
@@ -40,7 +50,14 @@ pub fn byte_decode<const D: usize>(bytes: &[u8]) -> Poly {
 
         while bits >= D {
             debug_assert!(idx < MlKem768::N);
-            out[idx] = (acc & mask) as i16;
+            let mut val = (acc & mask) as i16;
+            
+            // FIPS 203 Algorithm 6 requires reducing mod Q if D=12
+            if D == 12 {
+                val %= MlKem768::Q as i16;
+            }
+            
+            out[idx] = val;
             acc >>= D;
             bits -= D;
             idx += 1;
@@ -168,11 +185,24 @@ pub fn unpack_ciphertext(ct: &[u8; MlKem768::CT_BYTES]) -> ([[u16; MlKem768::N];
     (u, v)
 }
 
-/* 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::Rng;
+
+    #[test]
+    fn test_byte_encode_decode_12() {
+        let mut p = Poly::zero();
+        for i in 0..MlKem768::N {
+            p.0[i] = (i * 13) as i16 % MlKem768::Q as i16;
+        }
+        let mut encoded = [0u8; MlKem768::POLY_BYTES_12];
+        byte_encode::<12>(&p, &mut encoded);
+        let decoded = byte_decode::<12>(&encoded);
+        for i in 0..MlKem768::N {
+            assert_eq!(p.0[i], decoded.0[i], "Mismatch at index {}", i);
+        }
+    }
 
     #[test]
     fn pack_unpacked_ciphertext_matches_original() {
@@ -219,4 +249,3 @@ mod tests {
         assert_eq!(v, v2);
     }
 }
-*/
