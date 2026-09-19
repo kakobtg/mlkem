@@ -5,7 +5,7 @@
 //! cargo run --example kem_roundtrip
 //! ```
 
-use mlkem::{keygen, encaps, decaps};
+use mlkem::{decaps, encaps, keygen};
 use rand::rngs::OsRng;
 
 fn main() {
@@ -21,17 +21,19 @@ fn main() {
 
     // 3. The "sender" encapsulates a shared secret using the public key.
     //    This produces a ciphertext (ct) and the sender's shared secret (ss1).
-    let (ciphertext, shared_secret_sender) = encaps(&mut rng, &keypair.ek)
-        .expect("Encapsulation failed");
+    let (ciphertext, shared_secret_sender) =
+        encaps(&mut rng, &keypair.ek).expect("Encapsulation failed");
     println!("Shared secret encapsulated.");
 
     // 4. The "receiver" decapsulates the ciphertext using their private key
     //    to derive the same shared secret (ss2).
-    let shared_secret_receiver = decaps(&keypair.dk, &ciphertext)
-        .expect("Decapsulation failed");
+    let shared_secret_receiver = decaps(&keypair.dk, &ciphertext).expect("Decapsulation failed");
     println!("Ciphertext decapsulated.");
 
     // 5. Verify that both parties have the same shared secret.
-    assert_eq!(shared_secret_sender, shared_secret_receiver, "Shared secrets do not match!");
+    assert_eq!(
+        shared_secret_sender, shared_secret_receiver,
+        "Shared secrets do not match!"
+    );
     println!("Success!!!!!!! Shared secrets match.");
 }

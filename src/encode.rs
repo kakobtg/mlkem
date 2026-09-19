@@ -12,7 +12,7 @@ pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
 
     for &coef in p.0.iter() {
         let mut c = coef;
-        
+
         // For D=12, Kyber requires coefficients modulo Q strictly in [0, Q)
         if D == 12 {
             c = c % (MlKem768::Q as i16);
@@ -20,7 +20,7 @@ pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
                 c += MlKem768::Q as i16;
             }
         }
-        
+
         acc |= ((c as u16 as u64) & mask) << bits;
         bits += D;
 
@@ -51,12 +51,12 @@ pub fn byte_decode<const D: usize>(bytes: &[u8]) -> Poly {
         while bits >= D {
             debug_assert!(idx < MlKem768::N);
             let mut val = (acc & mask) as i16;
-            
+
             // FIPS 203 Algorithm 6 requires reducing mod Q if D=12
             if D == 12 {
                 val %= MlKem768::Q as i16;
             }
-            
+
             out[idx] = val;
             acc >>= D;
             bits -= D;
@@ -81,7 +81,9 @@ pub fn compress<const D: usize>(p: &Poly) -> [u16; MlKem768::N] {
     for (i, &coef) in p.0.iter().enumerate() {
         // Map coefficient to [0, q) then scale to D bits with rounding.
         let mut x = coef as i32 % q;
-        if x < 0 { x += q; }
+        if x < 0 {
+            x += q;
+        }
         let t = ((x * scale + offset) / q) as u16;
         out[i] = t & mask;
     }
@@ -107,7 +109,11 @@ pub fn decompress<const D: usize>(c: &[u16; MlKem768::N]) -> Poly {
 }
 
 /// Helpers for packing ciphertext (du,dv parts)
-pub fn pack_ciphertext(u: &[[u16; MlKem768::N]; MlKem768::K], v: &[u16; MlKem768::N], out: &mut [u8; MlKem768::CT_BYTES]) {
+pub fn pack_ciphertext(
+    u: &[[u16; MlKem768::N]; MlKem768::K],
+    v: &[u16; MlKem768::N],
+    out: &mut [u8; MlKem768::CT_BYTES],
+) {
     let mut acc: u32 = 0;
     let mut bits: usize = 0;
     let mut idx: usize = 0;
@@ -145,7 +151,9 @@ pub fn pack_ciphertext(u: &[[u16; MlKem768::N]; MlKem768::K], v: &[u16; MlKem768
     debug_assert!(bits == 0 && idx == MlKem768::CT_BYTES);
 }
 
-pub fn unpack_ciphertext(ct: &[u8; MlKem768::CT_BYTES]) -> ([[u16; MlKem768::N]; MlKem768::K], [u16; MlKem768::N]) {
+pub fn unpack_ciphertext(
+    ct: &[u8; MlKem768::CT_BYTES],
+) -> ([[u16; MlKem768::N]; MlKem768::K], [u16; MlKem768::N]) {
     let mut u = [[0u16; MlKem768::N]; MlKem768::K];
     let mut v = [0u16; MlKem768::N];
 

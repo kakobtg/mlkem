@@ -1,7 +1,7 @@
-use sha3::{Digest, Sha3_256, Sha3_512};
+use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake128;
 use sha3::Shake256;
-use sha3::digest::{Update, ExtendableOutput, XofReader};
+use sha3::{Digest, Sha3_256, Sha3_512};
 
 /// H = SHA3-256(x) -> 32 bytes
 pub fn h_sha3_256(input: &[u8]) -> [u8; 32] {

@@ -4,7 +4,9 @@ use crate::params::MlKem768;
 pub fn mod_q(x: i32) -> i16 {
     const Q: i32 = MlKem768::Q as i32;
     let mut r = x % Q;
-    if r < 0 { r += Q; }
+    if r < 0 {
+        r += Q;
+    }
     r as i16
 }
 
@@ -28,7 +30,9 @@ pub fn montgomery_reduce(x: i32) -> i16 {
     // Computes (x * R^{-1}) mod Q with R = 2^16
     let u = (x.wrapping_mul(QINV)) & 0xFFFF;
     let mut t = (x + u * Q) >> 16;
-    if t >= Q { t -= Q; }
+    if t >= Q {
+        t -= Q;
+    }
     t as i16
 }
 

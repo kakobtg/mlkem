@@ -1,110 +1,99 @@
 #![cfg(feature = "test-utils")]
 
-// Note: Adjust these imports depending on how you expose your internal functions in `lib.rs`
-use mlkem::internal::{keygen_internal, encaps_internal, decaps_internal};
+//! Validates this crate against the official NIST ACVP test vectors for
+//! ML-KEM-768, sourced from `usnistgov/ACVP-Server`
+//! (`gen-val/json-files/ML-KEM-{keyGen,encapDecap}-FIPS203/internalProjection.json`,
+//! ML-KEM-768 groups only — see `test_vectors/ML-KEM-768.json`).
+//!
+//! Covers three independent ACVP test groups, each exercised against the
+//! deterministic `internal::` API:
+//! - `keyGen` (AFT): `(d, z) -> (ek, dk)`
+//! - `encapsulation` (AFT): `(m, ek) -> (c, k)`
+//! - `decapsulation` (VAL): `(dk, c) -> k`, including "modified ciphertext"
+//!   cases that exercise implicit rejection (decaps never errors — a bad
+//!   ciphertext just yields a different, still-deterministic, `k`).
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use mlkem::internal::{decaps_internal, encaps_internal, keygen_internal};
+
+use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 
-/// A simple helper to decode hex strings without needing external crates like `hex`
 fn decode_hex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("Valid hex"))
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
         .collect()
+}
+
+fn field<const N: usize>(test: &Value, name: &str) -> [u8; N] {
+    let hex = test[name].as_str().unwrap_or_else(|| panic!("missing field `{name}`"));
+    decode_hex(hex)
+        .try_into()
+        .unwrap_or_else(|v: Vec<u8>| panic!("field `{name}` has {} bytes, expected {N}", v.len()))
 }
 
 #[test]
 fn test_official_nist_kats() {
     let kat_file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("test_vectors")
-        .join("kat_MLKEM_768.rsp");
+        .join("ML-KEM-768.json");
 
-    // Gracefully skip the test if the user hasn't downloaded the KAT vectors yet,
-    // avoiding breaking CI pipelines by default.
+    // Gracefully skip if the vectors haven't been fetched, so this doesn't
+    // break a build that hasn't run the (external, one-time) download step.
     if !kat_file.exists() {
-        println!("NIST KAT file not found at {:?}. Skipping test.", kat_file);
+        println!("ML-KEM-768 ACVP vectors not found at {kat_file:?}. Skipping test.");
         return;
     }
 
-    let file = File::open(kat_file).expect("Failed to open KAT file");
-    let reader = BufReader::new(file);
-
-    let mut d = Vec::new();
-    let mut z = Vec::new();
-    let mut pk = Vec::new();
-    let mut sk = Vec::new();
-    let mut m = Vec::new();
-    let mut ct = Vec::new();
-    let mut count = 0;
+    let raw = fs::read_to_string(&kat_file).expect("failed to read KAT file");
+    let doc: Value = serde_json::from_str(&raw).expect("failed to parse KAT JSON");
 
     let mut keys_tested = 0;
-    let mut encaps_tested = 0;
-    let mut decaps_tested = 0;
+    for test in doc["keyGen"].as_array().expect("keyGen array") {
+        let z: [u8; 32] = field(test, "z");
+        let d: [u8; 32] = field(test, "d");
+        let ek: mlkem::Ek = field(test, "ek");
+        let dk: mlkem::Dk = field(test, "dk");
 
-    for line in reader.lines() {
-        let line = line.unwrap();
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split(" = ").collect();
-        if parts.len() != 2 { continue; }
-
-        let key = parts[0];
-        let val = parts[1];
-
-        match key {
-            "d" => d = decode_hex(val),
-            "z" => z = decode_hex(val),
-            "pk" => pk = decode_hex(val),
-            "sk" => sk = decode_hex(val),
-            "m" | "msg" => m = decode_hex(val),
-            "ct" | "c" => ct = decode_hex(val),
-            "ss" | "K" | "k" | "shared_secret" => {
-                let ss = decode_hex(val);
-                
-                // 1. Test Deterministic KeyGen (only if d and z were present)
-                if d.len() == 32 && z.len() == 32 {
-                    let d_arr: [u8; 32] = d.as_slice().try_into().unwrap();
-                    let z_arr: [u8; 32] = z.as_slice().try_into().unwrap();
-                    let kp = keygen_internal(&d_arr, &z_arr);
-                    assert_eq!(kp.ek.as_slice(), pk.as_slice(), "PK mismatch in KAT {}", count);
-                    assert_eq!(kp.dk.as_slice(), sk.as_slice(), "SK mismatch in KAT {}", count);
-                    keys_tested += 1;
-                }
-
-                // 2. Test Deterministic Encapsulation (only if m was present)
-                if m.len() == 32 && pk.len() == 1184 {
-                    let m_arr: [u8; 32] = m.as_slice().try_into().unwrap();
-                    let pk_arr: mlkem::Ek = pk.as_slice().try_into().unwrap();
-                    let (ct_out, ss_enc) = encaps_internal(&m_arr, &pk_arr).expect("Encaps failed");
-                    assert_eq!(ct_out.as_slice(), ct.as_slice(), "Ciphertext mismatch in KAT {}", count);
-                    assert_eq!(ss_enc.as_slice(), ss.as_slice(), "Encaps SS mismatch in KAT {}", count);
-                    encaps_tested += 1;
-                }
-
-                // 3. Test Deterministic Decapsulation (requires sk and ct)
-                if sk.len() == 2400 && ct.len() == 1088 {
-                    let sk_arr: mlkem::Dk = sk.as_slice().try_into().unwrap();
-                    let ct_arr: mlkem::Ct = ct.as_slice().try_into().unwrap();
-                    let ss_dec = decaps_internal(&sk_arr, &ct_arr).expect("Decaps failed");
-                    assert_eq!(ss_dec.as_slice(), ss.as_slice(), "Decaps SS mismatch in KAT {}", count);
-                    decaps_tested += 1;
-                }
-
-                count += 1;
-                d.clear(); z.clear(); pk.clear(); sk.clear(); m.clear(); ct.clear();
-            }
-            _ => {}
-        }
+        let kp = keygen_internal(&d, &z);
+        assert_eq!(kp.ek, ek, "keyGen tcId {}: ek mismatch", test["tcId"]);
+        assert_eq!(kp.dk, dk, "keyGen tcId {}: dk mismatch", test["tcId"]);
+        keys_tested += 1;
     }
 
-    assert!(decaps_tested > 0, "No KATs were executed! Check the .rsp file format.");
-    println!("Successfully passed NIST ML-KEM-768 KATs!");
-    println!("- KeyGen tested: {}", keys_tested);
-    println!("- Encaps tested: {}", encaps_tested);
-    println!("- Decaps tested: {}", decaps_tested);
+    let mut encaps_tested = 0;
+    for test in doc["encapsulation"].as_array().expect("encapsulation array") {
+        let ek: mlkem::Ek = field(test, "ek");
+        let m: [u8; 32] = field(test, "m");
+        let c: mlkem::Ct = field(test, "c");
+        let k: mlkem::Ss = field(test, "k");
+
+        let (ct, ss) = encaps_internal(&m, &ek).expect("encaps_internal failed");
+        assert_eq!(ct, c, "encapsulation tcId {}: ciphertext mismatch", test["tcId"]);
+        assert_eq!(ss, k, "encapsulation tcId {}: shared secret mismatch", test["tcId"]);
+        encaps_tested += 1;
+    }
+
+    let mut decaps_tested = 0;
+    for test in doc["decapsulation"].as_array().expect("decapsulation array") {
+        let dk: mlkem::Dk = field(test, "dk");
+        let c: mlkem::Ct = field(test, "c");
+        let k: mlkem::Ss = field(test, "k");
+        let reason = test["reason"].as_str().unwrap_or("");
+
+        let ss = decaps_internal(&dk, &c).expect("decaps_internal failed");
+        assert_eq!(
+            ss, k,
+            "decapsulation tcId {} ({reason}): shared secret mismatch",
+            test["tcId"]
+        );
+        decaps_tested += 1;
+    }
+
+    assert!(keys_tested > 0 && encaps_tested > 0 && decaps_tested > 0, "no KATs were executed");
+    println!("Successfully passed official NIST ACVP ML-KEM-768 vectors!");
+    println!("- KeyGen tested: {keys_tested}");
+    println!("- Encaps tested: {encaps_tested}");
+    println!("- Decaps tested: {decaps_tested}");
 }
