@@ -6,7 +6,9 @@ use crate::reduce;
 pub struct Poly(pub [i16; MlKem768::N]);
 
 impl Poly {
-    pub fn zero() -> Self { Poly([0i16; MlKem768::N]) }
+    pub fn zero() -> Self {
+        Poly([0i16; MlKem768::N])
+    }
 
     pub fn add(&self, rhs: &Poly) -> Poly {
         let mut out = [0i16; MlKem768::N];
@@ -23,6 +25,14 @@ impl Poly {
             out[i] = reduce::sub(self.0[i], rhs.0[i]);
         }
         Poly(out)
+    }
+
+    /// Reduces every coefficient to its canonical representative in [0, q).
+    pub fn reduced(mut self) -> Poly {
+        for coef in self.0.iter_mut() {
+            *coef = reduce::mod_q(*coef as i32);
+        }
+        self
     }
 
     /// Schoolbook multiplication modulo (X^256 + 1).

@@ -1,6 +1,6 @@
+use crate::hash::prf_shake256;
 use crate::params::MlKem768;
 use crate::poly::Poly;
-use crate::hash::prf_shake256;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake128;
 
@@ -50,9 +50,16 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
     Poly(coeffs)
 }
 
-/// SamplePolyCBD(eta): centered binomial distribution from PRF stream
+/// SamplePolyCBD(eta): centered binomial distribution from PRF stream.
+///
+/// The bit trick below (4 bits in, 2 coefficients out per nibble) is only
+/// valid for eta=2 — the only value ML-KEM-768 ever uses, for both eta1 and
+/// eta2 (see `MlKem768::ETA1`/`ETA2`). This is a real `assert!` rather than
+/// `debug_assert!` so a caller passing any other eta fails loudly in every
+/// build profile instead of silently sampling from the wrong distribution
+/// (with a buffer sized for the wrong eta) in release builds.
 pub fn sample_poly_cbd_eta(seed: &[u8; 32], nonce: u8, eta: usize) -> Poly {
-    debug_assert_eq!(eta, MlKem768::ETA2, "only eta=2 supported");
+    assert_eq!(eta, MlKem768::ETA2, "sample_poly_cbd_eta only implements eta=2");
 
     // Generate PRF output: eta * N / 4 bytes = 128 bytes for eta=2, N=256.
     let mut buf = [0u8; MlKem768::ETA2 * MlKem768::N / 4];
@@ -89,7 +96,11 @@ mod tests {
         let seed = [0xAA; 32];
         let poly = sample_ntt(&seed, 0, 0);
         for &coef in poly.0.iter() {
-            assert!(coef >= 0 && coef < MlKem768::Q as i16, "NTT sample out of bounds: {}", coef);
+            assert!(
+                coef >= 0 && coef < MlKem768::Q as i16,
+                "NTT sample out of bounds: {}",
+                coef
+            );
         }
     }
 
@@ -98,7 +109,11 @@ mod tests {
         let seed = [0xBB; 32];
         let poly = sample_poly_cbd_eta(&seed, 0, MlKem768::ETA2);
         for &coef in poly.0.iter() {
-            assert!(coef >= -2 && coef <= 2, "CBD sample out of bounds: {}", coef);
+            assert!(
+                coef >= -2 && coef <= 2,
+                "CBD sample out of bounds: {}",
+                coef
+            );
         }
     }
 }

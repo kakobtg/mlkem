@@ -1,10 +1,10 @@
 use zeroize::Zeroize;
 
 use crate::params::MlKem768;
-use crate::{KeyPair, Ek, Dk, Ct, Ss, MlKemError};
-use crate::{hash, pke, ct};
 use crate::pke::SK_PKE_BYTES;
 use crate::util;
+use crate::{ct, hash, pke};
+use crate::{Ct, Dk, Ek, KeyPair, MlKemError, Ss};
 
 use rand_core::{CryptoRng, RngCore};
 
@@ -32,12 +32,13 @@ pub fn decaps_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
 }
 
 /// Deterministic keygen: input seeds (for KATs)
+///
+/// FIPS 203, Algorithm 16 (ML-KEM.KeyGen_internal), step 1: `(ekPKE, dkPKE) ←
+/// K-PKE.KeyGen(d)` — the seed `d` is passed straight through to K-PKE; this
+/// layer does no hashing of its own. (K-PKE.KeyGen performs its own
+/// `G(d ‖ k)` internally — see `pke::keygen`.)
 pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
-    let g_out = hash::g_sha3_512(d);
-    let (rho, sigma_rest) = util::split_at_32(&g_out, 0);
-    let mut sigma = [0u8; 32];
-    sigma.copy_from_slice(&sigma_rest[..32]);
-    let (ek, sk_pke) = pke::keygen(&rho, &sigma);
+    let (ek, sk_pke) = pke::keygen(d);
 
     let h_ek = hash::h_sha3_256(&ek);
 
@@ -55,6 +56,11 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
 }
 
 /// Deterministic encaps: input m for KATs
+///
+/// FIPS 203, Algorithm 17 (ML-KEM.Encaps_internal): `(K, r) ← G(m ‖ H(ek))`,
+/// `c ← K-PKE.Encrypt(ek, m, r)`, return `(K, c)`. `K` is returned directly —
+/// there is no further hashing of `K` with the ciphertext (that extra step
+/// existed in the Kyber round-3 design but was dropped in the final FIPS 203).
 pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError> {
     let h_ek = hash::h_sha3_256(ek);
 
@@ -62,21 +68,20 @@ pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError
     g_in[..32].copy_from_slice(m);
     g_in[32..].copy_from_slice(&h_ek);
     let g_out = hash::g_sha3_512(&g_in);
-    let (k_prime, r_rest) = util::split_at_32(&g_out, 0);
+    let (k, r_rest) = util::split_at_32(&g_out, 0);
     let mut r = [0u8; 32];
     r.copy_from_slice(&r_rest[..32]);
 
     let ct = pke::encrypt(ek, m, &r)?;
-    let h_ct = hash::h_sha3_256(&ct);
 
-    let mut j_in = [0u8; 64];
-    j_in[..32].copy_from_slice(&k_prime);
-    j_in[32..].copy_from_slice(&h_ct);
-    let ss = hash::j_shake256_32(&j_in);
-
-    Ok((ct, ss))
+    Ok((ct, k))
 }
 
+/// FIPS 203, Algorithm 18 (ML-KEM.Decaps_internal): the implicit-rejection
+/// value is `K̄ ← J(z ‖ c)` — hashed together with the *raw* ciphertext `c`,
+/// not `H(c)` (again, `H(c)` was the round-3 construction; FIPS 203 hashes
+/// the ciphertext itself). The "good" branch returns `K'` directly, with no
+/// extra hashing, matching `encaps_internal_768` above.
 pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     // parse dk layout: sk_pke || ek || h_ek || z
     let mut off = 0;
@@ -105,18 +110,12 @@ pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     let ct_prime = pke::encrypt(&ek, &m_prime, &r_prime)?;
     let valid = ct::ct_eq(ct_in, &ct_prime);
 
-    let h_ct = hash::h_sha3_256(ct_in);
+    let mut bad_in = [0u8; 32 + MlKem768::CT_BYTES];
+    bad_in[..32].copy_from_slice(&z);
+    bad_in[32..].copy_from_slice(ct_in);
+    let k_bar = hash::j_shake256_32(&bad_in);
 
-    let mut good = [0u8; 64];
-    good[..32].copy_from_slice(&k_prime);
-    good[32..].copy_from_slice(&h_ct);
-
-    let mut bad = [0u8; 64];
-    bad[..32].copy_from_slice(&z);
-    bad[32..].copy_from_slice(&h_ct);
-
-    let chosen = ct::ct_select_bytes::<64>(valid, &good, &bad);
-    let ss = hash::j_shake256_32(&chosen);
+    let ss = ct::ct_select_bytes::<32>(valid, &k_prime, &k_bar);
 
     Ok(ss)
 }
