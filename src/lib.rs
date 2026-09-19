@@ -7,13 +7,13 @@ pub mod params;
 mod kem;
 mod pke;
 
-mod hash;
-mod encode;
-mod reduce;
-mod poly;
-pub mod ntt;
-mod sample;
 mod ct;
+mod encode;
+mod hash;
+pub mod ntt;
+mod poly;
+mod reduce;
+mod sample;
 mod util;
 
 pub use error::MlKemError;
@@ -38,7 +38,10 @@ pub fn keygen<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> KeyP
 }
 
 /// Public API: randomized encaps
-pub fn encaps<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R, ek: &Ek) -> Result<(Ct, Ss), MlKemError> {
+pub fn encaps<R: rand_core::RngCore + rand_core::CryptoRng>(
+    rng: &mut R,
+    ek: &Ek,
+) -> Result<(Ct, Ss), MlKemError> {
     kem::encaps_768(rng, ek)
 }
 

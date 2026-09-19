@@ -44,9 +44,9 @@
 
 #![allow(non_upper_case_globals, non_snake_case)]
 
+use crate::poly::Poly;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
-use crate::poly::Poly;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Compile-time constants
@@ -57,7 +57,6 @@ const Q_INV: i16 = -3327_i16;
 /// 128⁻¹ · R mod q  (final scaling in NTT⁻¹, simultaneously converts back from
 /// Montgomery domain). 128⁻¹ mod q = 3303, and 3303 * 2¹⁶ mod q = 512.
 const INV128_MONT: i16 = 512;
-
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Twiddle-factor tables  (all 128 values, Montgomery-domain ζ^BitRev7(i))
@@ -183,31 +182,28 @@ static GAMMAS_NEON: [i16; 128] = {
     out
 };
 
-
-
-
 #[cfg(target_arch = "aarch64")]
 mod simd_helpers_marker {} // aarch64-only code follows
-// ──────────────────────────────────────────────────────────────────────────────
-// SIMD helper: Montgomery reduction
-//
-//  Input: 8 × i16 `a` each representing a·ζ products (may be wider than q)
-//         8 × i16 `zeta` — the Montgomery-form twiddle factor
-//  Output: montgomery_reduce(a × zeta) ≡ a·ζ·R⁻¹ mod q,  |result| ≤ q
-//
-//  The algorithm (vectorised Algorithm 5 / Algorithm 12 from the Neon NTT paper):
-//    lo   = (a × zeta).low16               [discard high half for Montgomery]
-//    k    = lo × Q_INV  (mod 2¹⁶)          [the correction term]
-//    high = (a × zeta − k × q) >> 16       [integer multiply-high]
-//
-//  Concretely in Neon (16-bit inputs, 32-bit intermediates):
-//    1. vmull_s16  + vmull_high_s16  → two int32x4_t   (a_lo × zeta_lo)
-//    2. vmovn_s32 on those gives the low 16 bits → int16x8_t
-//    3. multiply those low 16 bits by Q_INV
-//    4. vmull / vmull_high with Q → int32x4_t k·q
-//    5. vmlal_s16 / vmlal_high_s16 to accumulate a·zeta + k·q
-//    6. vshrq_n_s32 by 16 → high half → vmovn_s32 → int16x8_t result
-// ──────────────────────────────────────────────────────────────────────────────
+                           // ──────────────────────────────────────────────────────────────────────────────
+                           // SIMD helper: Montgomery reduction
+                           //
+                           //  Input: 8 × i16 `a` each representing a·ζ products (may be wider than q)
+                           //         8 × i16 `zeta` — the Montgomery-form twiddle factor
+                           //  Output: montgomery_reduce(a × zeta) ≡ a·ζ·R⁻¹ mod q,  |result| ≤ q
+                           //
+                           //  The algorithm (vectorised Algorithm 5 / Algorithm 12 from the Neon NTT paper):
+                           //    lo   = (a × zeta).low16               [discard high half for Montgomery]
+                           //    k    = lo × Q_INV  (mod 2¹⁶)          [the correction term]
+                           //    high = (a × zeta − k × q) >> 16       [integer multiply-high]
+                           //
+                           //  Concretely in Neon (16-bit inputs, 32-bit intermediates):
+                           //    1. vmull_s16  + vmull_high_s16  → two int32x4_t   (a_lo × zeta_lo)
+                           //    2. vmovn_s32 on those gives the low 16 bits → int16x8_t
+                           //    3. multiply those low 16 bits by Q_INV
+                           //    4. vmull / vmull_high with Q → int32x4_t k·q
+                           //    5. vmlal_s16 / vmlal_high_s16 to accumulate a·zeta + k·q
+                           //    6. vshrq_n_s32 by 16 → high half → vmovn_s32 → int16x8_t result
+                           // ──────────────────────────────────────────────────────────────────────────────
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn montgomery_mul_vec(a: int16x8_t, zeta: int16x8_t) -> int16x8_t {
@@ -304,11 +300,7 @@ unsafe fn barrett_reduce_vec(a: int16x8_t) -> int16x8_t {
 // ──────────────────────────────────────────────────────────────────────────────
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn ct_butterfly(
-    a: int16x8_t,
-    b: int16x8_t,
-    zeta: int16x8_t,
-) -> (int16x8_t, int16x8_t) {
+unsafe fn ct_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_t, int16x8_t) {
     let t = montgomery_mul_vec(b, zeta);
     (vaddq_s16(a, t), vsubq_s16(a, t))
 }
@@ -323,11 +315,7 @@ unsafe fn ct_butterfly(
 // ──────────────────────────────────────────────────────────────────────────────
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn gs_butterfly(
-    a: int16x8_t,
-    b: int16x8_t,
-    zeta: int16x8_t,
-) -> (int16x8_t, int16x8_t) {
+unsafe fn gs_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_t, int16x8_t) {
     let diff = vsubq_s16(b, a);
     (vaddq_s16(a, b), montgomery_mul_vec(diff, zeta))
 }
@@ -358,7 +346,9 @@ unsafe fn gs_butterfly(
 /// Forward NTT.
 pub fn ntt(mut poly: Poly) -> Poly {
     #[cfg(target_arch = "aarch64")]
-    unsafe { ntt_inner(&mut poly) }
+    unsafe {
+        ntt_inner(&mut poly)
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let out = scalar_ref::ntt_ref(&poly.0);
@@ -385,7 +375,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 128));
             let (a2, b2) = ct_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),       a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 128), b2);
             j += 8;
         }
@@ -402,7 +392,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 64));
             let (a2, b2) = ct_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 64), b2);
             j += 8;
         }
@@ -429,7 +419,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 32));
             let (a2, b2) = ct_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 32), b2);
             j += 8;
         }
@@ -447,7 +437,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 16));
             let (a2, b2) = ct_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 16), b2);
             j += 8;
         }
@@ -475,7 +465,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         let a = vld1q_s16(p.add(start));
         let b = vld1q_s16(p.add(start + 8));
         let (a2, b2) = ct_butterfly(a, b, zeta);
-        vst1q_s16(p.add(start),     a2);
+        vst1q_s16(p.add(start), a2);
         vst1q_s16(p.add(start + 8), b2);
         start += 16;
     }
@@ -499,13 +489,13 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         let zeta_vec: int16x8_t = vcombine_s16(zeta_lo, zeta_hi);
 
         // Load two 8-element blocks
-        let ab0 = vld1q_s16(p.add(start));       // a0..a3, b0..b3
-        let ab1 = vld1q_s16(p.add(start + 8));   // a1_0..a1_3, b1_0..b1_3
+        let ab0 = vld1q_s16(p.add(start)); // a0..a3, b0..b3
+        let ab1 = vld1q_s16(p.add(start + 8)); // a1_0..a1_3, b1_0..b1_3
 
         // Separate "a" lanes (0..3) and "b" lanes (4..7)
         // vuzp1q / vuzp2q rearrange two vectors, not what we want here.
         // Instead split each vec at the 64-bit boundary.
-        let a_vec: int16x8_t = vcombine_s16(vget_low_s16(ab0), vget_low_s16(ab1));  // block0_a, block1_a
+        let a_vec: int16x8_t = vcombine_s16(vget_low_s16(ab0), vget_low_s16(ab1)); // block0_a, block1_a
         let b_vec: int16x8_t = vcombine_s16(vget_high_s16(ab0), vget_high_s16(ab1)); // block0_b, block1_b
 
         let t = montgomery_mul_vec(b_vec, zeta_vec);
@@ -515,7 +505,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         // Interleave back: block0 = [a_new_lo | b_new_lo], block1 = [a_new_hi | b_new_hi]
         let out0: int16x8_t = vcombine_s16(vget_low_s16(a_new), vget_low_s16(b_new));
         let out1: int16x8_t = vcombine_s16(vget_high_s16(a_new), vget_high_s16(b_new));
-        vst1q_s16(p.add(start),     out0);
+        vst1q_s16(p.add(start), out0);
         vst1q_s16(p.add(start + 8), out1);
         start += 16;
     }
@@ -592,7 +582,9 @@ unsafe fn ntt_inner(poly: &mut Poly) {
 /// Inverse NTT.
 pub fn inv_ntt(mut poly: Poly) -> Poly {
     #[cfg(target_arch = "aarch64")]
-    unsafe { inv_ntt_inner(&mut poly) }
+    unsafe {
+        inv_ntt_inner(&mut poly)
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let out = scalar_ref::inv_ntt_ref(&poly.0);
@@ -673,7 +665,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
 
         let out0: int16x8_t = vcombine_s16(vget_low_s16(sum), vget_low_s16(diff_mont));
         let out1: int16x8_t = vcombine_s16(vget_high_s16(sum), vget_high_s16(diff_mont));
-        vst1q_s16(p.add(start),     out0);
+        vst1q_s16(p.add(start), out0);
         vst1q_s16(p.add(start + 8), out1);
         start += 16;
     }
@@ -688,7 +680,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         let a = vld1q_s16(p.add(start));
         let b = vld1q_s16(p.add(start + 8));
         let (a2, b2) = gs_butterfly(a, b, zeta);
-        vst1q_s16(p.add(start),     a2);
+        vst1q_s16(p.add(start), a2);
         vst1q_s16(p.add(start + 8), b2);
         start += 16;
     }
@@ -715,7 +707,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 16));
             let (a2, b2) = gs_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 16), b2);
             j += 8;
         }
@@ -733,7 +725,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 32));
             let (a2, b2) = gs_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 32), b2);
             j += 8;
         }
@@ -760,7 +752,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 64));
             let (a2, b2) = gs_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),      a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 64), b2);
             j += 8;
         }
@@ -787,7 +779,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
             let a = vld1q_s16(p.add(j));
             let b = vld1q_s16(p.add(j + 128));
             let (a2, b2) = gs_butterfly(a, b, zeta);
-            vst1q_s16(p.add(j),       a2);
+            vst1q_s16(p.add(j), a2);
             vst1q_s16(p.add(j + 128), b2);
             j += 8;
         }
@@ -814,7 +806,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Pointwise multiplication in the NTT domain  (FIPS 203, Algorithms 11 & 12)
 //
-//  Computes `out = a ⊙ b` where ⊙ is the componentwise product in T_q.
+//  Computes `out = a ⊙ b` where * is the componentwise product in T_q.
 //  Each pair (f̂[2i], f̂[2i+1]) lives in F_q[X] / (X² − ζ^(2·BitRev7(i)+1))
 //  so the base-case multiply is:
 //    c0 = a0·b0 + a1·b1·γ   (γ = ζ^(2·BitRev7(i)+1))
@@ -827,20 +819,22 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
 pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     let mut out = Poly::zero();
     #[cfg(target_arch = "aarch64")]
-    unsafe { mul_ntt_inner(a, b, &mut out) }
+    unsafe {
+        mul_ntt_inner(a, b, &mut out)
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         // Scalar base-case multiply
         let mut i = 0;
         while i < 256 {
             let a0 = a.0[i] as i32;
-            let a1 = a.0[i+1] as i32;
+            let a1 = a.0[i + 1] as i32;
             let b0 = b.0[i] as i32;
-            let b1 = b.0[i+1] as i32;
+            let b1 = b.0[i + 1] as i32;
             let gamma = RAW_GAMMAS_NEON[i / 2] as i32;
             let a1b1_gamma = crate::reduce::mod_q(a1 * b1) as i32 * gamma;
-            out.0[i]   = crate::reduce::mod_q(a0 * b0 + a1b1_gamma);
-            out.0[i+1] = crate::reduce::mod_q(a0 * b1 + a1 * b0);
+            out.0[i] = crate::reduce::mod_q(a0 * b0 + a1b1_gamma);
+            out.0[i + 1] = crate::reduce::mod_q(a0 * b1 + a1 * b0);
             i += 2;
         }
     }
@@ -877,7 +871,7 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
         let a0b0: int16x8_t = montgomery_mul_vec(a0, b0);
         let a1b1: int16x8_t = montgomery_mul_vec(a1, b1);
         let a1b1_gamma: int16x8_t = montgomery_mul_vec(a1b1, gamma);
-        
+
         let c0_rinv: int16x8_t = vaddq_s16(a0b0, a1b1_gamma);
 
         // c1 = a0·b1 + a1·b0
@@ -938,12 +932,17 @@ mod scalar_ref {
                 let zeta = {
                     let mut br = 0u32;
                     let mut n = k as u32;
-                    for _ in 0..7 { br = (br << 1) | (n & 1); n >>= 1; }
+                    for _ in 0..7 {
+                        br = (br << 1) | (n & 1);
+                        n >>= 1;
+                    }
                     let mut z = 1i32;
                     let mut base = 17i32;
                     let mut exp = br;
                     while exp > 0 {
-                        if exp & 1 != 0 { z = z * base % Q; }
+                        if exp & 1 != 0 {
+                            z = z * base % Q;
+                        }
                         base = base * base % Q;
                         exp >>= 1;
                     }
@@ -976,12 +975,17 @@ mod scalar_ref {
                 let zeta = {
                     let mut br = 0u32;
                     let mut n = k as u32;
-                    for _ in 0..7 { br = (br << 1) | (n & 1); n >>= 1; }
+                    for _ in 0..7 {
+                        br = (br << 1) | (n & 1);
+                        n >>= 1;
+                    }
                     let mut z = 1i32;
                     let mut base = 17i32;
                     let mut exp = br;
                     while exp > 0 {
-                        if exp & 1 != 0 { z = z * base % Q; }
+                        if exp & 1 != 0 {
+                            z = z * base % Q;
+                        }
                         base = base * base % Q;
                         exp >>= 1;
                     }

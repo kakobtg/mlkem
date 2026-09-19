@@ -17,7 +17,7 @@
 //! Then run:
 //! `cargo run --example three_party_exchange -p mlkem`
 
-use mlkem::{keygen, encaps, decaps};
+use mlkem::{decaps, encaps, keygen};
 use rand::rngs::OsRng;
 
 /// A simple module to represent the symmetric AES channel.
@@ -50,7 +50,11 @@ mod aes_channel {
         }
 
         /// Decrypts a message. The same nonce used for encryption must be provided.
-        pub fn decrypt(&self, ciphertext: &[u8], nonce: &[u8; 12]) -> Result<Vec<u8>, &'static str> {
+        pub fn decrypt(
+            &self,
+            ciphertext: &[u8],
+            nonce: &[u8; 12],
+        ) -> Result<Vec<u8>, &'static str> {
             let nonce = Nonce::from_slice(nonce);
             self.cipher
                 .decrypt(nonce, ciphertext)
@@ -58,7 +62,6 @@ mod aes_channel {
         }
     }
 }
-
 
 fn main() {
     println!("--- Setting up the three-party key exchange scenario ---");
@@ -73,8 +76,8 @@ fn main() {
     // --- 2. Bob receives Alice's public key and encapsulates a secret ---
     println!("[BOB]   Received Alice's public key.");
     println!("[BOB]   Encapsulating a shared secret...");
-    let (bob_ciphertext, bob_shared_secret) = encaps(&mut rng, &alice_keys.ek)
-        .expect("Bob failed to encapsulate");
+    let (bob_ciphertext, bob_shared_secret) =
+        encaps(&mut rng, &alice_keys.ek).expect("Bob failed to encapsulate");
     println!("[BOB]   Ciphertext sent over the wire.");
     println!("\n------------------------------------------------------\n");
 
@@ -84,16 +87,16 @@ fn main() {
     let eve_keys = keygen(&mut rng);
     println!("[EVE]   Trying to decapsulate with her own private key...");
     // This will "succeed" but produce a garbage secret due to implicit rejection.
-    let eve_fake_secret = decaps(&eve_keys.dk, &bob_ciphertext)
-        .expect("Eve's decapsulation should not error");
+    let eve_fake_secret =
+        decaps(&eve_keys.dk, &bob_ciphertext).expect("Eve's decapsulation should not error");
     println!("[EVE]   Derived a fake secret. Is it the right one?");
     println!("\n------------------------------------------------------\n");
 
     // --- 4. Alice receives Bob's ciphertext and decapsulates it ---
     println!("[ALICE] Received Bob's ciphertext.");
     println!("[ALICE] Decapsulating with her private key...");
-    let alice_shared_secret = decaps(&alice_keys.dk, &bob_ciphertext)
-        .expect("Alice failed to decapsulate");
+    let alice_shared_secret =
+        decaps(&alice_keys.dk, &bob_ciphertext).expect("Alice failed to decapsulate");
     println!("[ALICE] Successfully derived the shared secret.");
     println!("\n------------------------------------------------------\n");
 
@@ -121,12 +124,22 @@ fn main() {
     let nonce = b"unique nonce";
     let plaintext = b"This is a top secret message.";
 
-    println!("[ALICE] Encrypting message: '{}'", std::str::from_utf8(plaintext).unwrap());
-    let encrypted_message = alice_channel.encrypt(plaintext, nonce).expect("Alice failed to encrypt");
+    println!(
+        "[ALICE] Encrypting message: '{}'",
+        std::str::from_utf8(plaintext).unwrap()
+    );
+    let encrypted_message = alice_channel
+        .encrypt(plaintext, nonce)
+        .expect("Alice failed to encrypt");
 
     println!("[BOB]   Decrypting message...");
-    let decrypted_message = bob_channel.decrypt(&encrypted_message, nonce).expect("Bob failed to decrypt");
+    let decrypted_message = bob_channel
+        .decrypt(&encrypted_message, nonce)
+        .expect("Bob failed to decrypt");
 
     assert_eq!(plaintext, decrypted_message.as_slice());
-    println!("SUCCESS: Bob decrypted the message: '{}'", std::str::from_utf8(&decrypted_message).unwrap());
+    println!(
+        "SUCCESS: Bob decrypted the message: '{}'",
+        std::str::from_utf8(&decrypted_message).unwrap()
+    );
 }
