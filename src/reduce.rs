@@ -37,7 +37,6 @@ pub fn montgomery_reduce(x: i32) -> i16 {
 }
 
 #[allow(dead_code)]
-#[allow(dead_code)]
 #[inline]
 pub fn add(a: i16, b: i16) -> i16 {
     let mut r = a as i32 + b as i32;

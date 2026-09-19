@@ -9,11 +9,10 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
     let mut coeffs = [0i16; MlKem768::N];
     let mut hasher = Shake128::default();
     hasher.update(seed);
-    hasher.update(&[j, i]); // FIPS 203 requires (rho || j || i)
+    hasher.update(&[j, i]); // FIPS 203 requires (rho || j || i), not (rho || i || j)
     let mut reader = hasher.finalize_xof();
 
-    // SHAKE128 rate is 168 bytes; keep a small carry-over buffer for leftover bytes.
-    let mut buf = [0u8; 170]; // 168 + up to 2 leftover bytes
+    let mut buf = [0u8; 170]; // SHAKE128 rate (168) + up to 2 leftover bytes
     let mut leftover = 0usize;
     let mut ctr = 0usize;
 
@@ -40,7 +39,6 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
             }
         }
 
-        // Preserve up to two leftover bytes for the next block.
         leftover = total - idx;
         if leftover > 0 {
             buf.copy_within(idx..total, 0);
@@ -51,24 +49,18 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
 }
 
 /// SamplePolyCBD(eta): centered binomial distribution from PRF stream.
-///
-/// The bit trick below (4 bits in, 2 coefficients out per nibble) is only
-/// valid for eta=2 — the only value ML-KEM-768 ever uses, for both eta1 and
-/// eta2 (see `MlKem768::ETA1`/`ETA2`). This is a real `assert!` rather than
-/// `debug_assert!` so a caller passing any other eta fails loudly in every
-/// build profile instead of silently sampling from the wrong distribution
-/// (with a buffer sized for the wrong eta) in release builds.
+/// The bit trick below only works for eta=2 (ML-KEM-768's only value), so
+/// this asserts unconditionally rather than via `debug_assert!` — a wrong
+/// eta must fail loudly, not silently sample the wrong distribution.
 pub fn sample_poly_cbd_eta(seed: &[u8; 32], nonce: u8, eta: usize) -> Poly {
     assert_eq!(eta, MlKem768::ETA2, "sample_poly_cbd_eta only implements eta=2");
 
-    // Generate PRF output: eta * N / 4 bytes = 128 bytes for eta=2, N=256.
     let mut buf = [0u8; MlKem768::ETA2 * MlKem768::N / 4];
     prf_shake256(seed, nonce, &mut buf);
 
     let mut coeffs = [0i16; MlKem768::N];
     let mut off = 0usize;
 
-    // Process 4 bytes -> 8 coefficients (CBD for eta=2).
     for chunk in 0..(MlKem768::N / 8) {
         let t = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         off += 4;

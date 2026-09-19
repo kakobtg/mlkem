@@ -1,7 +1,7 @@
 use crate::params::MlKem768;
 use crate::poly::Poly;
 
-/// ByteEncode_d / ByteDecode_d for d in {1..12} (you will need specific ds)
+/// ByteEncode_d / ByteDecode_d for d in {1..12}
 pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
     debug_assert!(D > 0 && D <= 12);
 
@@ -79,7 +79,6 @@ pub fn compress<const D: usize>(p: &Poly) -> [u16; MlKem768::N] {
     let offset = q >> 1;
 
     for (i, &coef) in p.0.iter().enumerate() {
-        // Map coefficient to [0, q) then scale to D bits with rounding.
         let mut x = coef as i32 % q;
         if x < 0 {
             x += q;
@@ -100,7 +99,6 @@ pub fn decompress<const D: usize>(c: &[u16; MlKem768::N]) -> Poly {
     let shift = D as i32;
 
     for (i, &t) in c.iter().enumerate() {
-        // Inverse of compress: scale back to [0, q) with rounding.
         let val = ((t as i32 * q + rounding) >> shift) as i16;
         out[i] = val;
     }

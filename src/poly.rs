@@ -13,7 +13,6 @@ impl Poly {
     pub fn add(&self, rhs: &Poly) -> Poly {
         let mut out = [0i16; MlKem768::N];
         for i in 0..MlKem768::N {
-            // Essential for bit-level consistency in linearity tests
             out[i] = reduce::barrett_reduce(self.0[i] as i32 + rhs.0[i] as i32);
         }
         Poly(out)
@@ -35,8 +34,8 @@ impl Poly {
         self
     }
 
-    /// Schoolbook multiplication modulo (X^256 + 1).
-    /// Fixed: Uses i64 for accumulation to prevent overflow during summing.
+    /// Schoolbook multiplication modulo (X^256 + 1). Accumulates in i64 to
+    /// avoid overflow.
     pub fn mul_schoolbook_debug(&self, rhs: &Poly) -> Poly {
         let mut acc = [0i64; MlKem768::N];
 
@@ -47,7 +46,7 @@ impl Poly {
                 if idx < MlKem768::N {
                     acc[idx] += prod;
                 } else {
-                    // Polynomial reduction rule: X^n = -1
+                    // X^n = -1
                     acc[idx - MlKem768::N] -= prod;
                 }
             }
@@ -55,7 +54,6 @@ impl Poly {
 
         let mut out = [0i16; MlKem768::N];
         for (i, val) in acc.iter().enumerate() {
-            // Final reduction to field elements
             out[i] = reduce::mod_q((*val % MlKem768::Q as i64) as i32);
         }
 
@@ -68,6 +66,5 @@ pub type PolyVec = [Poly; MlKem768::K];
 
 #[allow(dead_code)]
 pub fn polyvec_zero() -> PolyVec {
-    // Fixed: Uses constant K instead of hardcoded length for flexibility.
     [Poly::zero(); MlKem768::K]
 }
