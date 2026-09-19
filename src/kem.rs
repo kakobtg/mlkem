@@ -30,10 +30,6 @@ pub fn encaps_768<R: RngCore + CryptoRng>(rng: &mut R, ek: &Ek) -> Result<(Ct, S
 pub fn decaps_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     decaps_internal_768(dk, ct_in)
 }
-
-/// Deterministic keygen for KATs. Per FIPS 203 Algorithm 16, `d` is passed
-/// straight to `pke::keygen` with no hashing here — K-PKE.KeyGen does its
-/// own `G(d ‖ k)` internally.
 pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     let (ek, sk_pke) = pke::keygen(d);
 
