@@ -1,46 +1,19 @@
-//! # ML-KEM-768 NTT — AArch64 Neon SIMD Implementation
+//! ML-KEM-768 NTT — AArch64 Neon SIMD implementation of the forward/inverse
+//! NTT (FIPS 203 Algorithms 9/10) and NTT-domain pointwise multiplication
+//! (Algorithms 11/12), for `n = 256`, `q = 3329`, `ζ = 17`.
 //!
-//! Implements the forward NTT (Algorithm 9), inverse NTT (Algorithm 10), and
-//! pointwise multiplication in the NTT domain (Algorithms 11/12) from FIPS 203,
-//! optimised for the ARMv8-A (AArch64) Neon instruction set.
+//! Arithmetic is done in the Montgomery domain (`R = 2¹⁶`): a value `a` is
+//! stored as `ā = a·R mod q`. `Q_INV = −3327 ≡ −q⁻¹ mod R` drives the
+//! Montgomery reduction kernel; `INV128_MONT = 3303 = 128⁻¹·R mod q` both
+//! scales by `1/128` and removes the Montgomery factor at the end of NTT⁻¹.
 //!
-//! ## Parameters (FIPS 203 §8)
-//! * `n = 256`  — polynomial degree
-//! * `q = 3329` — prime modulus
-//! * `ζ = 17`   — primitive 256th root of unity mod q  (ζ¹²⁸ ≡ −1 mod q)
+//! `ZETAS_NEON[i] = ζ^BitRev7(i)·R mod q` and `INV_ZETAS_NEON[i] = ζ^(−BitRev7(i))·R mod q`
+//! are the forward/inverse twiddle tables; `GAMMAS_NEON[i] = ζ^(2·BitRev7(i)+1) mod q`
+//! is *not* in Montgomery form because the basemul kernel's one Montgomery
+//! multiply already divides its output by `R`.
 //!
-//! ## Montgomery domain
-//! We work throughout in the Montgomery domain with `R = 2¹⁶`.
-//! A value `a` is stored as `ā = a·R mod q`.
-//!
-//! * `Q_INV = −3327` ≡ `−q⁻¹ mod R` (used in the Montgomery reduction kernel).
-//!   Concretely, `3329 · (−3327) ≡ −1 (mod 2¹⁶)` ✓
-//! * Scaling constant `3303 = 128⁻¹ · R mod q` is applied at the end of NTT⁻¹.
-//!
-//! ## Twiddle-factor tables
-//! `ZETAS_NEON[i]`     = `ζ^BitRev7(i) · R  mod q`  (forward NTT, Montgomery form)
-//! `INV_ZETAS_NEON[i]` = `ζ^(−BitRev7(i)) · R mod q` (inverse NTT, Montgomery form)
-//! `GAMMAS_NEON[i]`    = `ζ^(2·BitRev7(i)+1) mod q`  (basemul, *not* Montgomery form
-//!                        because the basemul kernel applies one Montgomery multiply
-//!                        whose output is implicitly divided by R, giving the correct
-//!                        residue in Montgomery form)
-//!
-//! Entries are duplicated / arranged so that every 8-element window in the table
-//! maps directly to a single `int16x8_t` register load.
-//!
-//! ## Butterfly shapes (NEON)
-//! Forward (Cooley–Tukey):
-//!   t  = montgomery_mul(b, ω)
-//!   b' = a − t
-//!   a' = a + t
-//!
-//! Inverse (Gentleman–Sande):
-//!   t  = a − b
-//!   a' = a + b
-//!   b' = montgomery_mul(t, ω⁻¹)
-//!
-//! Barrett reduction is inserted wherever additions could push an `i16` above
-//! 32767 (roughly 5q ≈ 16645).  The threshold used here is 2q = 6658.
+//! Barrett reduction is inserted between layers wherever another addition
+//! could push an `i16` past overflow.
 
 #![allow(non_upper_case_globals, non_snake_case)]
 
@@ -48,9 +21,6 @@ use crate::poly::Poly;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Compile-time constants
-// ──────────────────────────────────────────────────────────────────────────────
 pub const Q: i16 = 3329;
 /// −q⁻¹ mod 2¹⁶  (for Montgomery reduction)
 const Q_INV: i16 = -3327_i16;
@@ -58,27 +28,8 @@ const Q_INV: i16 = -3327_i16;
 /// Montgomery domain). 128⁻¹ mod q = 3303, and 3303 * 2¹⁶ mod q = 512.
 const INV128_MONT: i16 = 512;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Twiddle-factor tables  (all 128 values, Montgomery-domain ζ^BitRev7(i))
-//
-// Source: FIPS 203 Appendix A.
-// We store each entry twice in pairs so that the "small-len" butterfly layers
-// (len = 4, 2, 1) can be served with plain `vld1q_s16` loads of 8 i16 lanes
-// without scatter/gather.
-//
-// Layout:
-//   ZETAS_NEON[0..=127]   — one value per index (used when len >= 8)
-//   ZETAS_NEON[128..=383] — each value appears 4 × (fill 8-lane vectors for
-//                           the three tightest layers: len = 4, 2, 1)
-//
-// In practice the forward NTT uses indices 1..=127 from Appendix A in the
-// order they appear in Algorithm 9.  We keep the exact 128-entry array here
-// and handle duplication at the call site via `vdupq_n_s16` or `vld1q_dup_s16`.
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// `ZETAS_NEON[i]` = ζ^BitRev7(i) · R mod q,   i ∈ {1, …, 127}
+/// `ZETAS_NEON[i]` = ζ^BitRev7(i) · R mod q, from FIPS 203 Appendix A.
 /// Index 0 is unused (ζ^0 = 1, never a twiddle in the butterfly).
-/// Values from FIPS 203 Appendix A, row-major.
 #[rustfmt::skip]
 static ZETAS_NEON: [i16; 128] = [
     /*  0 unused */    0,
@@ -101,14 +52,8 @@ static ZETAS_NEON: [i16; 128] = [
      3021,   996,   991,   958,  1869,  1522,  1628,
 ];
 
-/// `INV_ZETAS_NEON[i]` = ζ^(−BitRev7(i)) · R mod q,  stored in GS order
-/// (reversed w.r.t. the forward table so that the inverse NTT loop can scan
-/// the array in the same ascending-index direction as the forward loop).
-/// Each value v is stored as `q − v` (i.e. −ζ^BitRev7(i) · R mod q) to match
-/// the subtraction form of the GS butterfly without an extra negation.
-///
-/// In practice we negate at the call site using `vsubq_s16(zero, z)` to keep
-/// the table human-readable (forward values).
+/// `INV_ZETAS_NEON[i]` = ζ^(−BitRev7(i)) · R mod q, reversed relative to
+/// `ZETAS_NEON` so the inverse NTT loop can scan it in ascending order too.
 #[rustfmt::skip]
 static INV_ZETAS_NEON: [i16; 128] = [
      1628,  1522,  1869,   958,   991,   996,  3021,  3221,
@@ -182,122 +127,67 @@ static GAMMAS_NEON: [i16; 128] = {
     out
 };
 
-#[cfg(target_arch = "aarch64")]
-mod simd_helpers_marker {} // aarch64-only code follows
-                           // ──────────────────────────────────────────────────────────────────────────────
-                           // SIMD helper: Montgomery reduction
-                           //
-                           //  Input: 8 × i16 `a` each representing a·ζ products (may be wider than q)
-                           //         8 × i16 `zeta` — the Montgomery-form twiddle factor
-                           //  Output: montgomery_reduce(a × zeta) ≡ a·ζ·R⁻¹ mod q,  |result| ≤ q
-                           //
-                           //  The algorithm (vectorised Algorithm 5 / Algorithm 12 from the Neon NTT paper):
-                           //    lo   = (a × zeta).low16               [discard high half for Montgomery]
-                           //    k    = lo × Q_INV  (mod 2¹⁶)          [the correction term]
-                           //    high = (a × zeta − k × q) >> 16       [integer multiply-high]
-                           //
-                           //  Concretely in Neon (16-bit inputs, 32-bit intermediates):
-                           //    1. vmull_s16  + vmull_high_s16  → two int32x4_t   (a_lo × zeta_lo)
-                           //    2. vmovn_s32 on those gives the low 16 bits → int16x8_t
-                           //    3. multiply those low 16 bits by Q_INV
-                           //    4. vmull / vmull_high with Q → int32x4_t k·q
-                           //    5. vmlal_s16 / vmlal_high_s16 to accumulate a·zeta + k·q
-                           //    6. vshrq_n_s32 by 16 → high half → vmovn_s32 → int16x8_t result
-                           // ──────────────────────────────────────────────────────────────────────────────
+/// Vectorized Montgomery reduction (Neon NTT paper, Algorithm 5/12): given
+/// 8 lanes of `a`, `zeta` (zeta in Montgomery form), returns
+/// `a·zeta·R⁻¹ mod q` with `|result| ≤ q`.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn montgomery_mul_vec(a: int16x8_t, zeta: int16x8_t) -> int16x8_t {
-    // ── Step 1: a × zeta in 32-bit ──────────────────────────────────────────
+    // Step 1: a * zeta in 32-bit.
     let prod_lo: int32x4_t = vmull_s16(vget_low_s16(a), vget_low_s16(zeta));
     let prod_hi: int32x4_t = vmull_high_s16(a, zeta);
 
-    // ── Step 2: extract low 16 bits of each 32-bit product ──────────────────
-    // vmovn_s32 saturates; we want truncation, so we use a shift+narrow trick.
-    // vshrn_n_s32 with shift=0 is not valid; instead reinterpret as int16x4x2
-    // by uzp.  A simpler portable approach: cast to int16x8 and take even lanes.
-    //   int16x8 layout: [lo0, hi0, lo1, hi1, lo2, hi2, lo3, hi3]
-    //   We want:        [lo0, lo1, lo2, lo3]
+    // Step 2: low 16 bits of each 32-bit product. vmovn_s32 saturates (we
+    // want truncation), so reinterpret as int16x8 ([lo0,hi0,lo1,hi1,...]) and
+    // uzp1 to take every even lane ([lo0,lo1,lo2,lo3]).
     let lo_lo: int16x8_t = vreinterpretq_s16_s32(prod_lo);
     let lo_hi: int16x8_t = vreinterpretq_s16_s32(prod_hi);
-    // uzp1 interleaves every other element → [lo0,lo1,lo2,lo3, lo4,lo5,lo6,lo7]
-    let t_lo: int16x8_t = vuzp1q_s16(lo_lo, lo_hi); // low words of each product
+    let t_lo: int16x8_t = vuzp1q_s16(lo_lo, lo_hi);
 
-    // ── Step 3: k = t_lo × Q_INV  (we only need low 16 bits) ───────────────
+    // Step 3: k = low 16 bits of (t_lo * Q_INV).
     let q_inv_vec: int16x8_t = vdupq_n_s16(Q_INV);
-    // We only need the low 16 bits of k (k is used in k×q below).
-    // Use a 16×16→32 multiply then extract low 16 via the same uzp trick.
     let k32_lo: int32x4_t = vmull_s16(vget_low_s16(t_lo), vget_low_s16(q_inv_vec));
     let k32_hi: int32x4_t = vmull_high_s16(t_lo, q_inv_vec);
     let k_lo16: int16x8_t = vreinterpretq_s16_s32(k32_lo);
     let k_hi16: int16x8_t = vreinterpretq_s16_s32(k32_hi);
-    let k: int16x8_t = vuzp1q_s16(k_lo16, k_hi16); // low 16 bits of k
+    let k: int16x8_t = vuzp1q_s16(k_lo16, k_hi16);
 
-    // ── Step 4 & 5: prod + k×q  (in 32-bit) ────────────────────────────────
+    // Steps 4-5: accumulate k*q into a*zeta (32-bit).
     let q_vec: int16x8_t = vdupq_n_s16(Q);
-    // Accumulate k×Q into the existing a×zeta products.
     let acc_lo: int32x4_t = vmlsl_s16(prod_lo, vget_low_s16(k), vget_low_s16(q_vec));
     let acc_hi: int32x4_t = vmlsl_high_s16(prod_hi, k, q_vec);
 
-    // ── Step 6: arithmetic right-shift by 16 → narrow ───────────────────────
+    // Step 6: shift right 16 (multiply-high) and narrow; already in [-q, q]
+    // so no saturation needed.
     let res_lo: int32x4_t = vshrq_n_s32(acc_lo, 16);
     let res_hi: int32x4_t = vshrq_n_s32(acc_hi, 16);
-    // Narrow to i16 — values are already in [−q, q] so no saturation needed.
     let res_lo16: int16x4_t = vmovn_s32(res_lo);
     let res_hi16: int16x4_t = vmovn_s32(res_hi);
     vcombine_s16(res_lo16, res_hi16)
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// SIMD helper: Barrett reduction  (FIPS 203, §4; Neon NTT paper §3.2.2)
-//
-//  Keeps each i16 coefficient in [0, 2q) after additions.
-//  For |x| ≤ 4·q = 13316, a single Barrett step suffices.
-//
-//  Scalar algorithm:
-//    t = ⌊ x · ⌈2²⁶/q⌉ / 2²⁶ ⌋
-//    x − t·q
-//
-//  Since Neon SQDMULH computes ⌊2·x·y / 2³²⌋ (for 32-bit lanes) but we are
-//  working in 16-bit lanes, we use the 32-bit path:
-//    1. Widen x to 32 bits with vmovl_s16 / vmovl_high_s16
-//    2. Multiply by the Barrett constant V = ⌈2²⁶/q⌉ = 20159
-//    3. Shift right by 26 with vshrq_n_s32
-//    4. Narrow back, multiply by q and subtract.
-//
-//  Note: vshrn_n_s32 only supports shifts 1..=16, so for shift=26 we must use
-//  vshrq_n_s32 (32-bit shift-in-lane) followed by vmovn_s32 (narrow to 16-bit).
-// ──────────────────────────────────────────────────────────────────────────────
+/// Vectorized Barrett reduction (FIPS 203 §4; Neon NTT paper §3.2.2): brings
+/// each lane into `[0, 2q)`, valid for `|x| ≤ 4q`. Widens to 32-bit since the
+/// shift (26) exceeds what `vshrn_n_s32` supports directly.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn barrett_reduce_vec(a: int16x8_t) -> int16x8_t {
-    // Barrett constant: ⌈2²⁶ / 3329⌉ = 20159  (fits in i16 ✓)
-    const V: i32 = 20159_i32;
+    const V: i32 = 20159_i32; // ceil(2^26 / q)
     let v_vec: int32x4_t = vdupq_n_s32(V);
 
-    // Widen to 32-bit
     let a_lo: int32x4_t = vmovl_s16(vget_low_s16(a));
     let a_hi: int32x4_t = vmovl_high_s16(a);
 
-    // t = (x * V) >> 26
     let t_lo: int32x4_t = vshrq_n_s32(vmulq_s32(a_lo, v_vec), 26);
     let t_hi: int32x4_t = vshrq_n_s32(vmulq_s32(a_hi, v_vec), 26);
-
-    // Narrow t to 16-bit
     let t16: int16x8_t = vcombine_s16(vmovn_s32(t_lo), vmovn_s32(t_hi));
 
-    // result = x − t·q
     let q_vec: int16x8_t = vdupq_n_s16(Q);
     vsubq_s16(a, vmulq_s16(t16, q_vec))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Cooley–Tukey butterfly (forward NTT layer)
-//
-//  a' = a + t        where t = MontMul(b, zeta)
-//  b' = a − t
-//
-//  Returns (a', b').  Both outputs are within [−2q, 2q] if inputs are.
-// ──────────────────────────────────────────────────────────────────────────────
+/// Cooley-Tukey butterfly (forward NTT layer): `(a + t, a - t)` where
+/// `t = MontMul(b, zeta)`. Outputs stay within `[-2q, 2q]` if inputs do.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn ct_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_t, int16x8_t) {
@@ -305,14 +195,7 @@ unsafe fn ct_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_
     (vaddq_s16(a, t), vsubq_s16(a, t))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Gentleman–Sande butterfly (inverse NTT layer)
-//
-//  a' = a + b
-//  b' = MontMul(a − b, zeta)
-//
-//  Returns (a', b').
-// ──────────────────────────────────────────────────────────────────────────────
+/// Gentleman-Sande butterfly (inverse NTT layer): `(a + b, MontMul(b - a, zeta))`.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn gs_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_t, int16x8_t) {
@@ -320,30 +203,10 @@ unsafe fn gs_butterfly(a: int16x8_t, b: int16x8_t, zeta: int16x8_t) -> (int16x8_
     (vaddq_s16(a, b), montgomery_mul_vec(diff, zeta))
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Forward NTT  (FIPS 203, Algorithm 9)
-//
-//  Transforms `poly` in-place from the coefficient domain to the NTT domain.
-//  Seven layers of Cooley–Tukey butterflies with bit-reversed twiddle factors.
-//
-//  Layer structure (len = half-butterfly-stride):
-//    Layer 0: len = 128  (1 butterfly block  of 128 pairs)
-//    Layer 1: len =  64  (2 butterfly blocks of  64 pairs)
-//    Layer 2: len =  32  (4 …)
-//    Layer 3: len =  16
-//    Layer 4: len =   8  → last layer handled fully in SIMD registers
-//    Layer 5: len =   4  → pairs within a single int16x8_t
-//    Layer 6: len =   2  → pairs within a single int16x8_t
-//
-//  Barrett reduction is applied after layers 0, 3, and 6 to keep coefficients
-//  from overflowing i16.  Each CT butterfly grows bounds by at most +q, so
-//  after 3 layers without Barrett the theoretical maximum is 8q ≈ 26632 which
-//  overflows i16.  We reduce after layers 1 and 4 instead (every 3 layers),
-//  keeping the maximum below 4q = 13316 < 32767.
-// ──────────────────────────────────────────────────────────────────────────────
-/// Forward NTT. Takes `Poly` by value, transforms it, returns it.
-/// Call site: `let poly_hat = ntt::ntt(poly);`
-/// Forward NTT.
+/// Forward NTT (FIPS 203, Algorithm 9): seven layers of Cooley-Tukey
+/// butterflies, `len` halving from 128 down to 2. Barrett-reduced every
+/// 3 layers (after layers 1 and 4, plus a final pass) — each butterfly adds
+/// at most `+q`, so waiting longer would overflow `i16` (8q ≈ 26632).
 pub fn ntt(mut poly: Poly) -> Poly {
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -361,12 +224,9 @@ pub fn ntt(mut poly: Poly) -> Poly {
 #[target_feature(enable = "neon")]
 unsafe fn ntt_inner(poly: &mut Poly) {
     let p = poly.0.as_mut_ptr();
-    // ── Zeta index counter — matches the i variable in FIPS 203 Algorithm 9 ──
-    let mut zeta_idx: usize = 1; // ZETAS_NEON[0] unused
+    let mut zeta_idx: usize = 1; // ZETAS_NEON[0] unused; matches `i` in Algorithm 9
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 0: len = 128,  1 block  (one twiddle fills all 128 CT-butterfly pairs)
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 0: len = 128, 1 block (one twiddle fills all 128 CT-butterfly pairs)
     {
         let zeta: int16x8_t = vdupq_n_s16(ZETAS_NEON[zeta_idx]);
         zeta_idx += 1;
@@ -381,9 +241,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 1: len = 64,  2 blocks
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 1: len = 64, 2 blocks
     for start in [0usize, 128] {
         let zeta: int16x8_t = vdupq_n_s16(ZETAS_NEON[zeta_idx]);
         zeta_idx += 1;
@@ -408,9 +266,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 2: len = 32,  4 blocks
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 2: len = 32, 4 blocks
     for start in [0usize, 64, 128, 192] {
         let zeta: int16x8_t = vdupq_n_s16(ZETAS_NEON[zeta_idx]);
         zeta_idx += 1;
@@ -425,9 +281,7 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 3: len = 16,  8 blocks
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 3: len = 16, 8 blocks
     let mut start = 0usize;
     while start < 256 {
         let zeta: int16x8_t = vdupq_n_s16(ZETAS_NEON[zeta_idx]);
@@ -454,10 +308,8 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 4: len = 8,  16 blocks
-    // Each block is exactly one int16x8_t pair (a[j..j+8], b[j+8..j+16]).
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 4: len = 8, 16 blocks; each block is one int16x8_t pair
+    // (a[j..j+8], b[j+8..j+16]).
     let mut start = 0usize;
     while start < 256 {
         let zeta: int16x8_t = vdupq_n_s16(ZETAS_NEON[zeta_idx]);
@@ -470,12 +322,9 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         start += 16;
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 5: len = 4,  32 blocks
-    // Now the two halves of a butterfly live in the *same* int16x8_t register:
-    //   lanes 0..3 → "a" side,  lanes 4..7 → "b" side
-    // We process two adjacent blocks of 8 in one pass.
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 5: len = 4, 32 blocks. Both halves of a butterfly now live in the
+    // same int16x8_t register (lanes 0..3 = "a", lanes 4..7 = "b"); process
+    // two adjacent 8-lane blocks per pass.
     let mut start = 0usize;
     while start < 256 {
         // Two consecutive twiddles (one per 8-element block)
@@ -510,12 +359,9 @@ unsafe fn ntt_inner(poly: &mut Poly) {
         start += 16;
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 6: len = 2,  64 blocks
-    // Butterfly pairs are adjacent: (lane0,lane1) with (lane2,lane3), etc.
-    // Treating `v` as int32x4_t `[L0, L1, L2, L3]`, the "a" halves are L0, L2
-    // and the "b" halves are L1, L3.
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 6: len = 2, 64 blocks. Butterfly pairs are adjacent lanes
+    // (0,1), (2,3), ...; viewed as int32x4_t [L0,L1,L2,L3], the "a" halves
+    // are L0,L2 and the "b" halves are L1,L3.
     let mut start = 0usize;
     while start < 256 {
         let z0 = ZETAS_NEON[zeta_idx];
@@ -568,18 +414,9 @@ unsafe fn ntt_inner(poly: &mut Poly) {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Inverse NTT  (FIPS 203, Algorithm 10)
-//
-//  Transforms `poly` in-place from the NTT domain back to coefficients.
-//  Uses Gentleman–Sande butterflies and the inverse twiddle table.
-//  The final step multiplies every coefficient by 3303 = 128⁻¹·R mod q,
-//  which simultaneously handles the 1/128 scaling AND removes the Montgomery
-//  factor (i.e., the output is a standard ℤ_q coefficient).
-// ──────────────────────────────────────────────────────────────────────────────
-/// Inverse NTT. Takes `Poly` by value, transforms it, returns it.
-/// Call site: `let poly = ntt::inv_ntt(poly_hat);`
-/// Inverse NTT.
+/// Inverse NTT (FIPS 203, Algorithm 10): Gentleman-Sande butterflies with the
+/// inverse twiddle table, then a final multiply by `INV128_MONT` that does
+/// the `1/128` scaling and removes the Montgomery factor in one step.
 pub fn inv_ntt(mut poly: Poly) -> Poly {
     #[cfg(target_arch = "aarch64")]
     unsafe {
@@ -599,11 +436,8 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
     let p = poly.0.as_mut_ptr();
     let mut zeta_idx: usize = 0; // INV_ZETAS_NEON scanned forward
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 0 (GS, len=2): 64 blocks
-    // Uses the same 32-bit unzip trick as forward Layer 6 to separate pairs
-    // with a stride of 2 elements.
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 0 (GS, len=2): 64 blocks. Same 32-bit unzip trick as forward
+    // Layer 6, to separate pairs with a stride of 2 elements.
     let mut start = 0usize;
     while start < 256 {
         let z0 = INV_ZETAS_NEON[zeta_idx];
@@ -641,9 +475,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
 
         start += 16;
     }
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 1 (GS, len=4): 32 blocks  (two adjacent 8-element vectors per pass)
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 1 (GS, len=4): 32 blocks (two adjacent 8-element vectors per pass)
     let mut start = 0usize;
     while start < 256 {
         let z0 = INV_ZETAS_NEON[zeta_idx];
@@ -670,9 +502,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         start += 16;
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
     // Layer 2 (GS, len=8): 16 blocks
-    // ══════════════════════════════════════════════════════════════════════════
     let mut start = 0usize;
     while start < 256 {
         let zeta: int16x8_t = vdupq_n_s16(INV_ZETAS_NEON[zeta_idx]);
@@ -695,9 +525,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
     // Layer 3 (GS, len=16): 8 blocks
-    // ══════════════════════════════════════════════════════════════════════════
     let mut start = 0usize;
     while start < 256 {
         let zeta: int16x8_t = vdupq_n_s16(INV_ZETAS_NEON[zeta_idx]);
@@ -714,9 +542,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         start += 32;
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
     // Layer 4 (GS, len=32): 4 blocks
-    // ══════════════════════════════════════════════════════════════════════════
     for start in [0usize, 64, 128, 192] {
         let zeta: int16x8_t = vdupq_n_s16(INV_ZETAS_NEON[zeta_idx]);
         zeta_idx += 1;
@@ -741,9 +567,7 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
     // Layer 5 (GS, len=64): 2 blocks
-    // ══════════════════════════════════════════════════════════════════════════
     for start in [0usize, 128] {
         let zeta: int16x8_t = vdupq_n_s16(INV_ZETAS_NEON[zeta_idx]);
         zeta_idx += 1;
@@ -768,12 +592,9 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Layer 6 (GS, len=128): 1 block
-    // ══════════════════════════════════════════════════════════════════════════
+    // Layer 6 (GS, len=128): 1 block. zeta_idx is 127 here; no need to advance further.
     {
         let zeta: int16x8_t = vdupq_n_s16(INV_ZETAS_NEON[zeta_idx]);
-        // zeta_idx would be 127 here; we don't need to advance further.
         let mut j = 0usize;
         while j < 128 {
             let a = vld1q_s16(p.add(j));
@@ -785,11 +606,8 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // Final scaling: multiply every coefficient by INV128_MONT = 3303
-    // This is a one-known-factor Montgomery multiply: output = coeff·3303·R⁻¹
-    // ≡ coeff · 128⁻¹ (mod q), simultaneously removing the Montgomery factor.
-    // ══════════════════════════════════════════════════════════════════════════
+    // Final scaling: MontMul by INV128_MONT (3303) ≡ multiply by 128⁻¹ mod q
+    // while also removing the Montgomery factor, in one pass.
     {
         let scale: int16x8_t = vdupq_n_s16(INV128_MONT);
         let mut j = 0usize;
@@ -803,19 +621,10 @@ unsafe fn inv_ntt_inner(poly: &mut Poly) {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Pointwise multiplication in the NTT domain  (FIPS 203, Algorithms 11 & 12)
-//
-//  Computes `out = a ⊙ b` where * is the componentwise product in T_q.
-//  Each pair (f̂[2i], f̂[2i+1]) lives in F_q[X] / (X² − ζ^(2·BitRev7(i)+1))
-//  so the base-case multiply is:
-//    c0 = a0·b0 + a1·b1·γ   (γ = ζ^(2·BitRev7(i)+1))
-//    c1 = a0·b1 + a1·b0
-//
-//  We de-interleave using `vld2q_s16` to separate even/odd lanes, perform the
-//  four products via Montgomery multiplication, then re-interleave.
-// ──────────────────────────────────────────────────────────────────────────────
-/// Pointwise multiply two NTT-domain polynomials, returning the product.
+/// Pointwise multiply two NTT-domain polynomials (FIPS 203, Algorithms 11/12).
+/// Each coefficient pair `(a[2i], a[2i+1])` lives in `F_q[X] / (X² - γ)` with
+/// `γ = ζ^(2·BitRev7(i)+1)`, so the base-case product is
+/// `c0 = a0*b0 + a1*b1*γ`, `c1 = a0*b1 + a1*b0`.
 pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     let mut out = Poly::zero();
     #[cfg(target_arch = "aarch64")]
@@ -824,7 +633,6 @@ pub fn mul_ntt(a: &Poly, b: &Poly) -> Poly {
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        // Scalar base-case multiply
         let mut i = 0;
         while i < 256 {
             let a0 = a.0[i] as i32;
@@ -852,9 +660,9 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     // Montgomery domain (mont_mul(x, R^2) = x * R^2 * R^-1 = x * R).
     let r2 = vdupq_n_s16(1353);
 
-    // Process 8 base-case multiplications (= 16 coefficients) per iteration.
-    let mut i = 0usize; // coefficient index, step 16
-    let mut gi = 0usize; // GAMMAS_NEON index, step 8
+    // 8 base-case multiplications (16 coefficients) per iteration.
+    let mut i = 0usize;
+    let mut gi = 0usize;
 
     while i < 256 {
         // De-interleave a and b into even (index 2k) and odd (index 2k+1) lanes
@@ -891,9 +699,7 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Scalar reference helpers (used for tests / parameter derivation)
-// ──────────────────────────────────────────────────────────────────────────────
+// Scalar reference helpers, used for tests and as a comparison oracle.
 mod scalar_ref {
     use super::Q;
 
@@ -1010,9 +816,6 @@ mod scalar_ref {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Tests
-// ──────────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;

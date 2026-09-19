@@ -30,13 +30,6 @@ pub fn encaps_768<R: RngCore + CryptoRng>(rng: &mut R, ek: &Ek) -> Result<(Ct, S
 pub fn decaps_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     decaps_internal_768(dk, ct_in)
 }
-
-/// Deterministic keygen: input seeds (for KATs)
-///
-/// FIPS 203, Algorithm 16 (ML-KEM.KeyGen_internal), step 1: `(ekPKE, dkPKE) ←
-/// K-PKE.KeyGen(d)` — the seed `d` is passed straight through to K-PKE; this
-/// layer does no hashing of its own. (K-PKE.KeyGen performs its own
-/// `G(d ‖ k)` internally — see `pke::keygen`.)
 pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     let (ek, sk_pke) = pke::keygen(d);
 
@@ -55,12 +48,9 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     KeyPair { ek, dk }
 }
 
-/// Deterministic encaps: input m for KATs
-///
-/// FIPS 203, Algorithm 17 (ML-KEM.Encaps_internal): `(K, r) ← G(m ‖ H(ek))`,
-/// `c ← K-PKE.Encrypt(ek, m, r)`, return `(K, c)`. `K` is returned directly —
-/// there is no further hashing of `K` with the ciphertext (that extra step
-/// existed in the Kyber round-3 design but was dropped in the final FIPS 203).
+/// Deterministic encaps for KATs (FIPS 203 Algorithm 17). `K` from
+/// `G(m ‖ H(ek))` is returned as-is — no extra hashing with the ciphertext
+/// (that was round-3 Kyber; FIPS 203 dropped it).
 pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError> {
     let h_ek = hash::h_sha3_256(ek);
 
@@ -77,13 +67,11 @@ pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError
     Ok((ct, k))
 }
 
-/// FIPS 203, Algorithm 18 (ML-KEM.Decaps_internal): the implicit-rejection
-/// value is `K̄ ← J(z ‖ c)` — hashed together with the *raw* ciphertext `c`,
-/// not `H(c)` (again, `H(c)` was the round-3 construction; FIPS 203 hashes
-/// the ciphertext itself). The "good" branch returns `K'` directly, with no
-/// extra hashing, matching `encaps_internal_768` above.
+/// Deterministic decaps (FIPS 203 Algorithm 18). Implicit rejection hashes
+/// `z ‖ c` — the raw ciphertext, not `H(c)`; the valid branch returns `K'`
+/// as-is, matching `encaps_internal_768`.
 pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
-    // parse dk layout: sk_pke || ek || h_ek || z
+    // dk layout: sk_pke || ek || h_ek || z
     let mut off = 0;
     let mut sk_pke = [0u8; SK_PKE_BYTES];
     sk_pke.copy_from_slice(&dk[off..off + SK_PKE_BYTES]);

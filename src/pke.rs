@@ -40,10 +40,8 @@ fn ntt_and_reduce_vec(v: &PolyVec) -> PolyVec {
     out
 }
 
-/// Computes the (un-reduced) NTT-domain dot product `sum_j a[j] ⊙ b[j]`.
-/// Left un-reduced so callers can apply `.reduced()` at exactly the point
-/// the original algorithm calls for, since that placement differs slightly
-/// between KeyGen and Encrypt's uses of this same accumulation pattern.
+/// Un-reduced NTT-domain dot product `sum_j a[j] ⊙ b[j]`; callers apply
+/// `.reduced()` themselves since where that happens varies by call site.
 fn dot_ntt_raw(a: &PolyVec, b: &PolyVec) -> Poly {
     let mut acc = ntt::mul_ntt(&a[0], &b[0]);
     for j in 1..MlKem768::K {
@@ -56,9 +54,8 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
     let mut ek = [0u8; MlKem768::EK_BYTES];
     let mut sk = [0u8; SK_PKE_BYTES];
 
-    // FIPS 203, Algorithm 13, Step 1: (ρ, σ) ← G(d ‖ k). The module-dimension
-    // byte `k` domain-separates this hash across ML-KEM parameter sets so the
-    // same seed `d` can't produce correlated (ρ, σ) for two different `k`.
+    // (ρ, σ) ← G(d ‖ k); appending `k` domain-separates the hash across
+    // ML-KEM parameter sets (FIPS 203, Algorithm 13, Step 1).
     let mut hasher = Sha3_512::new();
     hasher.update(d);
     hasher.update([MlKem768::K as u8]);
@@ -67,24 +64,19 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
     let rho: &[u8; 32] = g_out[0..32].try_into().unwrap();
     let sigma: &[u8; 32] = g_out[32..64].try_into().unwrap();
 
-    // sample secret s and error e using sigma
     let s = sample_noise_vec(sigma, 0, MlKem768::ETA1);
     let e = sample_noise_vec(sigma, MlKem768::K as u8, MlKem768::ETA1);
-
-    // NTT(s)
     let s_hat = ntt_and_reduce_vec(&s);
-
-    // build A from rho
     let a_hat = sample_matrix_a(rho);
 
-    // compute t_hat = A_hat * s_hat + NTT(e)
+    // t_hat = A_hat . s_hat + NTT(e)
     let mut t_hat = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
         let e_hat = ntt::ntt(e[i]);
         t_hat[i] = dot_ntt_raw(&a_hat[i], &s_hat).add(&e_hat).reduced();
     }
 
-    // encode ek = t_hat || rho
+    // ek = t_hat || rho
     let mut off = 0;
     for poly in t_hat.iter() {
         encode::byte_encode::<12>(poly, &mut ek[off..off + MlKem768::POLY_BYTES_12]);
@@ -92,7 +84,7 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
     }
     ek[off..off + 32].copy_from_slice(rho);
 
-    // encode sk = s_hat
+    // sk = s_hat
     let mut sk_off = 0;
     for poly in s_hat.iter() {
         encode::byte_encode::<12>(poly, &mut sk[sk_off..sk_off + MlKem768::POLY_BYTES_12]);
@@ -121,22 +113,18 @@ pub fn parse_ek(_ek: &Ek) -> Result<(PolyVec, [u8; 32]), MlKemError> {
 
 /// PKE.Encrypt (internal): takes message poly and coins
 pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemError> {
-    // 1) parse ek -> (t_hat_vec, rho)
     let (t_hat_vec, rho) = parse_ek(_ek)?;
-
-    // 2) generate A_hat from rho via SampleNTT
     let a_hat = sample_matrix_a(&rho);
 
     let r = sample_noise_vec(_coins, 0, MlKem768::ETA1);
     let e1 = sample_noise_vec(_coins, MlKem768::K as u8, MlKem768::ETA2);
     let e2 = sample::sample_poly_cbd_eta(_coins, (2 * MlKem768::K) as u8, MlKem768::ETA2);
-
-    // 4) compute u = invNTT(A_hat^T * NTT(r)) + e1
     let r_hat = ntt_and_reduce_vec(&r);
 
+    // u = invNTT(A_hat^T . NTT(r)) + e1
     let mut u = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
-        // column i of A_hat^T is row i of A_hat, i.e. {a_hat[j][i] : j in 0..K}
+        // column i of A_hat^T is row i of A_hat: {a_hat[j][i] : j in 0..K}
         let mut a_col_i = [Poly::zero(); MlKem768::K];
         for j in 0..MlKem768::K {
             a_col_i[j] = a_hat[j][i];
@@ -145,11 +133,10 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
         u[i] = ntt::inv_ntt(acc).add(&e1[i]).reduced();
     }
 
-    // 5) v = invNTT(t_hat^T * NTT(r)) + e2 + m
+    // v = invNTT(t_hat^T . NTT(r)) + e2 + m, m encoded as {0, (q+1)/2} per bit
     let v_acc = dot_ntt_raw(&t_hat_vec, &r_hat).reduced();
     let v_pre_msg = ntt::inv_ntt(v_acc).add(&e2).reduced();
 
-    // Embed message bits as polynomial with coefficients in {0, (q+1)/2}
     let mut m_poly = [0i16; MlKem768::N];
     let msg_val = ((MlKem768::Q + 1) / 2) as i16;
     for (byte_idx, byte) in _m.iter().enumerate() {
@@ -161,7 +148,6 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     }
     let v = v_pre_msg.add(&Poly(m_poly));
 
-    // 6) compress+pack with du,dv
     let mut u_comp = [[0u16; MlKem768::N]; MlKem768::K];
     for i in 0..MlKem768::K {
         u_comp[i] = encode::compress::<{ MlKem768::DU }>(&u[i]);
@@ -176,10 +162,8 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
 
 /// PKE.Decrypt (internal)
 pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
-    // unpack ciphertext
     let (u_comp, v_comp) = encode::unpack_ciphertext(_ct);
 
-    // decode secret key (s_hat polynomials)
     let mut s_hat_vec = [Poly::zero(); MlKem768::K];
     let mut offset = 0;
     for poly in s_hat_vec.iter_mut() {
@@ -188,7 +172,7 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
         offset = end;
     }
 
-    // compute v - invNTT(s_hat^T * NTT(u))
+    // m = v - invNTT(s_hat^T . NTT(u))
     let mut u_polys = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
         u_polys[i] = encode::decompress::<{ MlKem768::DU }>(&u_comp[i]);
@@ -199,7 +183,6 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
     let v_poly = encode::decompress::<{ MlKem768::DV }>(&v_comp);
     let m_poly = v_poly.sub(&ntt::inv_ntt(acc));
 
-    // slice out message bits
     let mut m = [0u8; 32];
     for (i, &coef) in m_poly.0.iter().enumerate() {
         let val = reduce::mod_q(coef as i32) as i32;

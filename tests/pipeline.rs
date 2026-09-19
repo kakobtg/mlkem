@@ -93,7 +93,7 @@ fn check_deterministic_internal_pipeline() {
 
 #[test]
 fn ml_kem_768_end_to_end_pipeline() {
-    // --- 0. Parameter sanity: fixed-size types must match the FIPS 203 ML-KEM-768 sizes ---
+    // Parameter sanity: fixed-size types must match the FIPS 203 ML-KEM-768 sizes.
     assert_eq!(std::mem::size_of::<Ek>(), MlKem768::EK_BYTES);
     assert_eq!(std::mem::size_of::<Dk>(), MlKem768::DK_BYTES);
     assert_eq!(std::mem::size_of::<Ct>(), MlKem768::CT_BYTES);
@@ -105,26 +105,26 @@ fn ml_kem_768_end_to_end_pipeline() {
 
     let mut rng = OsRng;
 
-    // --- 1. Alice generates a long-term keypair ---
+    // Alice generates a long-term keypair.
     let alice = keygen(&mut rng);
 
-    // --- 2. Alice's public key crosses the "wire" to Bob ---
+    // Alice's public key crosses the "wire" to Bob.
     let ek_on_wire = wire_roundtrip(&alice.ek);
     assert_eq!(ek_on_wire, alice.ek, "encapsulation key must survive serialization untouched");
 
-    // --- 3. Bob encapsulates a shared secret against Alice's public key ---
+    // Bob encapsulates a shared secret against Alice's public key.
     let (ct_bob, ss_bob) = encaps(&mut rng, &ek_on_wire).expect("Bob's encapsulation failed");
     assert_ne!(ss_bob, [0u8; 32], "shared secret must not be degenerate/all-zero");
 
-    // --- 4. The ciphertext crosses the "wire" back to Alice ---
+    // The ciphertext crosses the "wire" back to Alice.
     let ct_on_wire = wire_roundtrip(&ct_bob);
     assert_eq!(ct_on_wire, ct_bob, "ciphertext must survive serialization untouched");
 
-    // --- 5. Alice decapsulates and must recover exactly Bob's shared secret ---
+    // Alice decapsulates and must recover exactly Bob's shared secret.
     let ss_alice = decaps(&alice.dk, &ct_on_wire).expect("Alice's decapsulation failed");
     assert_eq!(ss_alice, ss_bob, "Alice and Bob must agree on the shared secret");
 
-    // --- 6. Put the shared secret to real use: an AES-256-GCM channel ---
+    // Put the shared secret to real use: an AES-256-GCM channel.
     let alice_channel = aes_channel::SecureChannel::new(&ss_alice);
     let bob_channel = aes_channel::SecureChannel::new(&ss_bob);
     let nonce = *b"pipeline-nc!"; // 12 bytes, required by AES-GCM
@@ -138,7 +138,7 @@ fn ml_kem_768_end_to_end_pipeline() {
         .expect("Alice must be able to decrypt Bob's message with the shared secret");
     assert_eq!(recovered, plaintext, "round-tripped plaintext must match exactly");
 
-    // --- 7. Eve: a passive eavesdropper with her own keypair must not derive the secret ---
+    // Eve: a passive eavesdropper with her own keypair must not derive the secret.
     let eve = keygen(&mut rng);
     let eve_ss = decaps(&eve.dk, &ct_on_wire)
         .expect("decaps must not error for a mismatched key (implicit rejection)");
@@ -149,7 +149,7 @@ fn ml_kem_768_end_to_end_pipeline() {
         "Eve's bogus secret must not open Alice and Bob's AEAD channel"
     );
 
-    // --- 8. Tamper detection / implicit rejection on a corrupted ciphertext ---
+    // Tamper detection / implicit rejection on a corrupted ciphertext.
     let mut tampered_ct = ct_bob;
     tampered_ct[0] ^= 0x01;
     let ss_tampered =
@@ -169,12 +169,12 @@ fn ml_kem_768_end_to_end_pipeline() {
         "implicit rejection output must be deterministic for the same dk/ct pair"
     );
 
-    // --- 9. Wrong keypair decapsulating the *original* ciphertext must also disagree ---
+    // Wrong keypair decapsulating the *original* ciphertext must also disagree.
     let ss_wrong_key = decaps(&eve.dk, &ct_bob).expect("decaps must not error for a wrong keypair");
     assert_ne!(ss_wrong_key, ss_bob, "decapsulation with the wrong secret key must not match");
 
-    // --- 10. Repeat the whole pipeline across independent sessions: fresh randomness
-    //         must yield fresh keys, ciphertexts and secrets every single time ---
+    // Repeat across independent sessions: fresh randomness must yield fresh
+    // keys, ciphertexts and secrets every time.
     let mut seen_secrets = HashSet::new();
     seen_secrets.insert(ss_bob);
     for _ in 0..5 {
@@ -188,6 +188,6 @@ fn ml_kem_768_end_to_end_pipeline() {
         );
     }
 
-    // --- 11. Cross-check the deterministic internal API backing the NIST KAT harness ---
+    // Cross-check the deterministic internal API backing the NIST KAT harness.
     check_deterministic_internal_pipeline();
 }
