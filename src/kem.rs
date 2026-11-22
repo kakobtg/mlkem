@@ -49,6 +49,9 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     off += 32;
     dk[off..off + 32].copy_from_slice(z);
 
+    let mut sk_pke = sk_pke;
+    sk_pke.zeroize();
+
     KeyPair { ek, dk }
 }
 
@@ -61,14 +64,18 @@ pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError
     let mut g_in = [0u8; 64];
     g_in[..32].copy_from_slice(m);
     g_in[32..].copy_from_slice(&h_ek);
-    let g_out = hash::g_sha3_512(&g_in);
+    let mut g_out = hash::g_sha3_512(&g_in);
     let (k, r_rest) = util::split_at_32(&g_out, 0);
     let mut r = [0u8; 32];
     r.copy_from_slice(&r_rest[..32]);
 
-    let ct = pke::encrypt(ek, m, &r)?;
+    let ct = pke::encrypt(ek, m, &r);
 
-    Ok((ct, k))
+    g_in.zeroize();
+    g_out.zeroize();
+    r.zeroize();
+
+    Ok((ct?, k))
 }
 
 /// Deterministic decaps (FIPS 203 Algorithm 18). Implicit rejection hashes
@@ -87,27 +94,53 @@ pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
 
     let h_ek = util::split_at_32(dk, off).0;
     off += 32;
-    let z = util::split_at_32(dk, off).0;
+    let mut z = util::split_at_32(dk, off).0;
 
-    let m_prime = pke::decrypt(&sk_pke, ct_in)?;
+    // Neither `decrypt` nor `encrypt` can fail for fixed-size inputs, but if
+    // they ever did we must not return early: the timing of an early exit
+    // would distinguish the two branches. Fold any error into the result at
+    // the very end instead, after every secret has been wiped.
+    let mut dec = pke::decrypt(&sk_pke, ct_in);
+    sk_pke.zeroize();
+    let mut m_prime = *dec.as_ref().unwrap_or(&[0u8; 32]);
 
     let mut g_in = [0u8; 64];
     g_in[..32].copy_from_slice(&m_prime);
     g_in[32..].copy_from_slice(&h_ek);
-    let g_out = hash::g_sha3_512(&g_in);
-    let (k_prime, r_rest) = util::split_at_32(&g_out, 0);
+    let mut g_out = hash::g_sha3_512(&g_in);
+    let (mut k_prime, r_rest) = util::split_at_32(&g_out, 0);
     let mut r_prime = [0u8; 32];
     r_prime.copy_from_slice(&r_rest[..32]);
 
-    let ct_prime = pke::encrypt(&ek, &m_prime, &r_prime)?;
+    let enc = pke::encrypt(&ek, &m_prime, &r_prime);
+    let mut ct_prime = *enc.as_ref().unwrap_or(&[0u8; MlKem768::CT_BYTES]);
+    // Constant-time comparison: whether (and where) the re-encryption
+    // differs is exactly what a chosen-ciphertext attacker wants to learn.
     let valid = ct::ct_eq(ct_in, &ct_prime);
 
+    // Always compute the rejection key, valid or not, so both outcomes take
+    // the same time.
     let mut bad_in = [0u8; 32 + MlKem768::CT_BYTES];
     bad_in[..32].copy_from_slice(&z);
     bad_in[32..].copy_from_slice(ct_in);
-    let k_bar = hash::j_shake256_32(&bad_in);
+    let mut k_bar = hash::j_shake256_32(&bad_in);
 
     let ss = ct::ct_select_bytes::<32>(valid, &k_prime, &k_bar);
 
+    m_prime.zeroize();
+    g_in.zeroize();
+    g_out.zeroize();
+    k_prime.zeroize();
+    r_prime.zeroize();
+    ct_prime.zeroize();
+    bad_in.zeroize();
+    k_bar.zeroize();
+    z.zeroize();
+    if let Ok(m) = dec.as_mut() {
+        m.zeroize();
+    }
+
+    dec?;
+    enc?;
     Ok(ss)
 }

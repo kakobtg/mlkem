@@ -699,7 +699,11 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     }
 }
 
-// Scalar reference helpers, used for tests and as a comparison oracle.
+// Scalar helpers: a comparison oracle for the NEON code in tests.
+// Scalar NTT. On non-aarch64 targets this is the production path, so it must
+// be constant-time too: all reductions go through `reduce::mod_q` (no `%`, no
+// branches). The twiddle computation below uses `%`, but only on the public
+// loop index, never on coefficient data.
 mod scalar_ref {
     use super::Q;
 
@@ -718,10 +722,8 @@ mod scalar_ref {
         let v: i32 = 20159;
         let t = ((a as i32 * v) >> 26) as i16;
         let r = a - t * Q;
-        // conditionally add/sub q to land in [0, q)
-        let r = if r >= Q { r - Q } else { r };
-        let r = if r < 0 { r + Q } else { r };
-        r
+        // conditionally add/sub q to land in [0, q), without branching
+        crate::reduce::csubq(crate::reduce::caddq(r as i32)) as i16
     }
 
     /// Scalar reference NTT (FIPS 203 Algorithm 9, plain arithmetic)
@@ -756,7 +758,7 @@ mod scalar_ref {
                 };
                 k += 1;
                 for j in start..start + len {
-                    let t = (zeta * f[j + len] as i32).rem_euclid(Q) as i16;
+                    let t = crate::reduce::mod_q(zeta * f[j + len] as i32);
                     f[j + len] = f[j] - t;
                     f[j] = f[j] + t;
                 }
@@ -800,8 +802,8 @@ mod scalar_ref {
                 k = k.wrapping_sub(1);
                 for j in start..start + len {
                     let t = f[j];
-                    f[j] = (t as i32 + f[j + len] as i32).rem_euclid(Q) as i16;
-                    f[j + len] = (zeta * (f[j + len] as i32 - t as i32)).rem_euclid(Q) as i16;
+                    f[j] = crate::reduce::mod_q(t as i32 + f[j + len] as i32);
+                    f[j + len] = crate::reduce::mod_q(zeta * (f[j + len] as i32 - t as i32));
                 }
                 start += 2 * len;
             }
@@ -810,7 +812,7 @@ mod scalar_ref {
         // Final scaling: × 128⁻¹ mod Q
         const INV128: i32 = 3303; // pow(128, -1, 3329)
         for coeff in f.iter_mut() {
-            *coeff = ((*coeff as i32 * INV128).rem_euclid(Q)) as i16;
+            *coeff = crate::reduce::mod_q(*coeff as i32 * INV128);
         }
         f
     }

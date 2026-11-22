@@ -1,5 +1,6 @@
 use crate::params::MlKem768;
 use crate::poly::Poly;
+use crate::reduce;
 
 /// ByteEncode_d / ByteDecode_d for d in {1..12}
 pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
@@ -13,12 +14,11 @@ pub fn byte_encode<const D: usize>(p: &Poly, out: &mut [u8]) {
     for &coef in p.0.iter() {
         let mut c = coef;
 
-        // For D=12, Kyber requires coefficients modulo Q strictly in [0, Q)
+        // For D=12, Kyber requires coefficients modulo Q strictly in [0, Q).
+        // `D` is a compile-time constant, so this branch is not secret-dependent;
+        // the reduction itself is constant-time (these may be secret-key coefs).
         if D == 12 {
-            c = c % (MlKem768::Q as i16);
-            if c < 0 {
-                c += MlKem768::Q as i16;
-            }
+            c = reduce::mod_q(c as i32);
         }
 
         acc |= ((c as u16 as u64) & mask) << bits;
@@ -52,9 +52,11 @@ pub fn byte_decode<const D: usize>(bytes: &[u8]) -> Poly {
             debug_assert!(idx < MlKem768::N);
             let mut val = (acc & mask) as i16;
 
-            // FIPS 203 Algorithm 6 requires reducing mod Q if D=12
+            // FIPS 203 Algorithm 6 requires reducing mod Q if D=12. `val` is in
+            // [0, 2^12) < 2q, so one branchless conditional subtract suffices
+            // (no `%`: this runs on secret-key bytes during decryption).
             if D == 12 {
-                val %= MlKem768::Q as i16;
+                val = reduce::csubq(val as i32) as i16;
             }
 
             out[idx] = val;
@@ -68,25 +70,25 @@ pub fn byte_decode<const D: usize>(bytes: &[u8]) -> Poly {
     Poly(out)
 }
 
+/// Compress_d for a single coefficient: `round(2^D · x / q) mod 2^D`.
+///
+/// Constant-time: the coefficient is canonicalised without branches and the
+/// division by `q` is a multiply-and-shift (`reduce::div_q`). A hardware
+/// division here would leak the secret operand through timing (KyberSlash).
+#[inline(always)]
+pub fn compress_coef<const D: usize>(coef: i16) -> u16 {
+    debug_assert!(D > 0 && D <= 11);
+    let x = reduce::mod_q(coef as i32) as u32;
+    let n = (x << D) + (MlKem768::Q as u32 >> 1);
+    (reduce::div_q(n) as u16) & (((1u32 << D) - 1) as u16)
+}
+
 /// Compress_d / Decompress_d for coefficient vectors
 pub fn compress<const D: usize>(p: &Poly) -> [u16; MlKem768::N] {
-    debug_assert!(D > 0 && D <= 12);
-
     let mut out = [0u16; MlKem768::N];
-    let q = MlKem768::Q as i32;
-    let scale = 1i32 << D;
-    let mask = (scale as u16) - 1;
-    let offset = q >> 1;
-
-    for (i, &coef) in p.0.iter().enumerate() {
-        let mut x = coef as i32 % q;
-        if x < 0 {
-            x += q;
-        }
-        let t = ((x * scale + offset) / q) as u16;
-        out[i] = t & mask;
+    for (o, &coef) in out.iter_mut().zip(p.0.iter()) {
+        *o = compress_coef::<D>(coef);
     }
-
     out
 }
 
@@ -208,6 +210,31 @@ mod tests {
         for i in 0..MlKem768::N {
             assert_eq!(p.0[i], decoded.0[i], "Mismatch at index {}", i);
         }
+    }
+
+    /// The constant-time compress must agree with the naive division formula
+    /// for every canonical coefficient (and its negative representative).
+    #[test]
+    fn compress_matches_naive_division() {
+        fn naive<const D: usize>(c: i16) -> u16 {
+            let q = MlKem768::Q as i32;
+            let x = (c as i32).rem_euclid(q);
+            ((((x << D) + (q >> 1)) / q) & ((1 << D) - 1)) as u16
+        }
+        for c in -(MlKem768::Q as i16)..(MlKem768::Q as i16) {
+            assert_eq!(compress_coef::<1>(c), naive::<1>(c));
+            assert_eq!(compress_coef::<4>(c), naive::<4>(c));
+            assert_eq!(compress_coef::<10>(c), naive::<10>(c));
+            assert_eq!(compress_coef::<11>(c), naive::<11>(c));
+        }
+    }
+
+    #[test]
+    fn byte_decode_12_reduces_noncanonical() {
+        // All-ones bytes decode to 4095 per coefficient, which must become 4095 - q.
+        let bytes = [0xFFu8; MlKem768::POLY_BYTES_12];
+        let p = byte_decode::<12>(&bytes);
+        assert!(p.0.iter().all(|&c| c == 4095 - MlKem768::Q));
     }
 
     #[test]

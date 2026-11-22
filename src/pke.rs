@@ -1,6 +1,6 @@
 use crate::params::MlKem768;
 use crate::poly::{Poly, PolyVec};
-use crate::reduce;
+use zeroize::Zeroize;
 use crate::{encode, ntt, sample};
 use crate::{Ct, Ek, MlKemError};
 use sha3::{Digest, Sha3_512};
@@ -59,22 +59,29 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
     let mut hasher = Sha3_512::new();
     hasher.update(d);
     hasher.update([MlKem768::K as u8]);
-    let g_out = hasher.finalize();
+    let mut g_out = hasher.finalize();
 
-    let rho: &[u8; 32] = g_out[0..32].try_into().unwrap();
-    let sigma: &[u8; 32] = g_out[32..64].try_into().unwrap();
+    let mut rho = [0u8; 32];
+    rho.copy_from_slice(&g_out[0..32]);
+    let mut sigma = [0u8; 32];
+    sigma.copy_from_slice(&g_out[32..64]);
+    g_out.zeroize();
 
-    let s = sample_noise_vec(sigma, 0, MlKem768::ETA1);
-    let e = sample_noise_vec(sigma, MlKem768::K as u8, MlKem768::ETA1);
-    let s_hat = ntt_and_reduce_vec(&s);
-    let a_hat = sample_matrix_a(rho);
+    let mut s = sample_noise_vec(&sigma, 0, MlKem768::ETA1);
+    let mut e = sample_noise_vec(&sigma, MlKem768::K as u8, MlKem768::ETA1);
+    sigma.zeroize();
+    let mut s_hat = ntt_and_reduce_vec(&s);
+    let a_hat = sample_matrix_a(&rho);
 
     // t_hat = A_hat . s_hat + NTT(e)
     let mut t_hat = [Poly::zero(); MlKem768::K];
     for i in 0..MlKem768::K {
-        let e_hat = ntt::ntt(e[i]);
+        let mut e_hat = ntt::ntt(e[i]);
         t_hat[i] = dot_ntt_raw(&a_hat[i], &s_hat).add(&e_hat).reduced();
+        e_hat.zeroize();
     }
+    s.zeroize();
+    e.zeroize();
 
     // ek = t_hat || rho
     let mut off = 0;
@@ -82,7 +89,7 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
         encode::byte_encode::<12>(poly, &mut ek[off..off + MlKem768::POLY_BYTES_12]);
         off += MlKem768::POLY_BYTES_12;
     }
-    ek[off..off + 32].copy_from_slice(rho);
+    ek[off..off + 32].copy_from_slice(&rho);
 
     // sk = s_hat
     let mut sk_off = 0;
@@ -90,6 +97,7 @@ pub fn keygen(d: &[u8; 32]) -> (Ek, [u8; SK_PKE_BYTES]) {
         encode::byte_encode::<12>(poly, &mut sk[sk_off..sk_off + MlKem768::POLY_BYTES_12]);
         sk_off += MlKem768::POLY_BYTES_12;
     }
+    s_hat.zeroize();
 
     (ek, sk)
 }
@@ -116,10 +124,10 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     let (t_hat_vec, rho) = parse_ek(_ek)?;
     let a_hat = sample_matrix_a(&rho);
 
-    let r = sample_noise_vec(_coins, 0, MlKem768::ETA1);
-    let e1 = sample_noise_vec(_coins, MlKem768::K as u8, MlKem768::ETA2);
-    let e2 = sample::sample_poly_cbd_eta(_coins, (2 * MlKem768::K) as u8, MlKem768::ETA2);
-    let r_hat = ntt_and_reduce_vec(&r);
+    let mut r = sample_noise_vec(_coins, 0, MlKem768::ETA1);
+    let mut e1 = sample_noise_vec(_coins, MlKem768::K as u8, MlKem768::ETA2);
+    let mut e2 = sample::sample_poly_cbd_eta(_coins, (2 * MlKem768::K) as u8, MlKem768::ETA2);
+    let mut r_hat = ntt_and_reduce_vec(&r);
 
     // u = invNTT(A_hat^T . NTT(r)) + e1
     let mut u = [Poly::zero(); MlKem768::K];
@@ -137,22 +145,31 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     let v_acc = dot_ntt_raw(&t_hat_vec, &r_hat).reduced();
     let v_pre_msg = ntt::inv_ntt(v_acc).add(&e2).reduced();
 
+    // Decompress_1(m): bit -> {0, (q+1)/2}. The message is secret, so build
+    // the coefficient from an all-ones/all-zeros mask instead of branching.
     let mut m_poly = [0i16; MlKem768::N];
     let msg_val = ((MlKem768::Q + 1) / 2) as i16;
     for (byte_idx, byte) in _m.iter().enumerate() {
         let base = byte_idx * 8;
         for bit in 0..8 {
-            let mask = (byte >> bit) & 1;
-            m_poly[base + bit] = if mask == 1 { msg_val } else { 0 };
+            let mask = -(((byte >> bit) & 1) as i16); // 0x0000 or 0xFFFF
+            m_poly[base + bit] = mask & msg_val;
         }
     }
-    let v = v_pre_msg.add(&Poly(m_poly));
+    let mut v = v_pre_msg.add(&Poly(m_poly));
 
     let mut u_comp = [[0u16; MlKem768::N]; MlKem768::K];
     for i in 0..MlKem768::K {
         u_comp[i] = encode::compress::<{ MlKem768::DU }>(&u[i]);
     }
     let v_comp = encode::compress::<{ MlKem768::DV }>(&v);
+
+    r.zeroize();
+    r_hat.zeroize();
+    e1.zeroize();
+    e2.zeroize();
+    m_poly.zeroize();
+    v.zeroize();
 
     let mut ct = [0u8; MlKem768::CT_BYTES];
     encode::pack_ciphertext(&u_comp, &v_comp, &mut ct);
@@ -181,15 +198,18 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
 
     let acc = dot_ntt_raw(&s_hat_vec, &u_hat).reduced();
     let v_poly = encode::decompress::<{ MlKem768::DV }>(&v_comp);
-    let m_poly = v_poly.sub(&ntt::inv_ntt(acc));
+    let mut m_poly = v_poly.sub(&ntt::inv_ntt(acc));
 
+    // m = ByteEncode_1(Compress_1(w)). Constant-time compress: no division
+    // on the secret-dependent coefficient (KyberSlash2).
     let mut m = [0u8; 32];
     for (i, &coef) in m_poly.0.iter().enumerate() {
-        let val = reduce::mod_q(coef as i32) as i32;
-        let t = ((val << 1) + (MlKem768::Q as i32 / 2)) / (MlKem768::Q as i32);
-        let bit = (t & 1) as u8;
+        let bit = encode::compress_coef::<1>(coef) as u8;
         m[i >> 3] |= bit << (i & 7);
     }
+
+    s_hat_vec.zeroize();
+    m_poly.zeroize();
 
     Ok(m)
 }
