@@ -30,6 +30,8 @@ pub fn encaps_768<R: RngCore + CryptoRng>(rng: &mut R, ek: &Ek) -> Result<(Ct, S
 pub fn decaps_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     decaps_internal_768(dk, ct_in)
 }
+
+/// FIPS 203 Algorithm 16
 pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     let (ek, sk_pke) = pke::keygen(d);
 
@@ -45,33 +47,35 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     off += 32;
     dk[off..off + 32].copy_from_slice(z);
 
+    let mut sk_pke = sk_pke;
+    sk_pke.zeroize();
+
     KeyPair { ek, dk }
 }
 
-/// Deterministic encaps for KATs (FIPS 203 Algorithm 17). `K` from
-/// `G(m ‖ H(ek))` is returned as-is — no extra hashing with the ciphertext
-/// (that was round-3 Kyber; FIPS 203 dropped it).
+/// FIPS 203 Algorithm 17
 pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError> {
     let h_ek = hash::h_sha3_256(ek);
 
     let mut g_in = [0u8; 64];
     g_in[..32].copy_from_slice(m);
     g_in[32..].copy_from_slice(&h_ek);
-    let g_out = hash::g_sha3_512(&g_in);
+    let mut g_out = hash::g_sha3_512(&g_in);
     let (k, r_rest) = util::split_at_32(&g_out, 0);
     let mut r = [0u8; 32];
     r.copy_from_slice(&r_rest[..32]);
 
-    let ct = pke::encrypt(ek, m, &r)?;
+    let ct = pke::encrypt(ek, m, &r);
 
-    Ok((ct, k))
+    g_in.zeroize();
+    g_out.zeroize();
+    r.zeroize();
+
+    Ok((ct?, k))
 }
 
-/// Deterministic decaps (FIPS 203 Algorithm 18). Implicit rejection hashes
-/// `z ‖ c` — the raw ciphertext, not `H(c)`; the valid branch returns `K'`
-/// as-is, matching `encaps_internal_768`.
+/// FIPS 203 Algorithm 18
 pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
-    // dk layout: sk_pke || ek || h_ek || z
     let mut off = 0;
     let mut sk_pke = [0u8; SK_PKE_BYTES];
     sk_pke.copy_from_slice(&dk[off..off + SK_PKE_BYTES]);
@@ -83,27 +87,45 @@ pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
 
     let h_ek = util::split_at_32(dk, off).0;
     off += 32;
-    let z = util::split_at_32(dk, off).0;
+    let mut z = util::split_at_32(dk, off).0;
 
-    let m_prime = pke::decrypt(&sk_pke, ct_in)?;
+    let mut dec = pke::decrypt(&sk_pke, ct_in);
+    sk_pke.zeroize();
+    let mut m_prime = *dec.as_ref().unwrap_or(&[0u8; 32]);
 
     let mut g_in = [0u8; 64];
     g_in[..32].copy_from_slice(&m_prime);
     g_in[32..].copy_from_slice(&h_ek);
-    let g_out = hash::g_sha3_512(&g_in);
-    let (k_prime, r_rest) = util::split_at_32(&g_out, 0);
+    let mut g_out = hash::g_sha3_512(&g_in);
+    let (mut k_prime, r_rest) = util::split_at_32(&g_out, 0);
     let mut r_prime = [0u8; 32];
     r_prime.copy_from_slice(&r_rest[..32]);
 
-    let ct_prime = pke::encrypt(&ek, &m_prime, &r_prime)?;
+    let enc = pke::encrypt(&ek, &m_prime, &r_prime);
+    let mut ct_prime = *enc.as_ref().unwrap_or(&[0u8; MlKem768::CT_BYTES]);
     let valid = ct::ct_eq(ct_in, &ct_prime);
 
     let mut bad_in = [0u8; 32 + MlKem768::CT_BYTES];
     bad_in[..32].copy_from_slice(&z);
     bad_in[32..].copy_from_slice(ct_in);
-    let k_bar = hash::j_shake256_32(&bad_in);
+    let mut k_bar = hash::j_shake256_32(&bad_in);
 
     let ss = ct::ct_select_bytes::<32>(valid, &k_prime, &k_bar);
 
+    m_prime.zeroize();
+    g_in.zeroize();
+    g_out.zeroize();
+    k_prime.zeroize();
+    r_prime.zeroize();
+    ct_prime.zeroize();
+    bad_in.zeroize();
+    k_bar.zeroize();
+    z.zeroize();
+    if let Ok(m) = dec.as_mut() {
+        m.zeroize();
+    }
+
+    dec?;
+    enc?;
     Ok(ss)
 }

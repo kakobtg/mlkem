@@ -5,6 +5,12 @@ use crate::reduce;
 #[derive(Clone, Copy)]
 pub struct Poly(pub [i16; MlKem768::N]);
 
+impl zeroize::Zeroize for Poly {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl Poly {
     pub fn zero() -> Self {
         Poly([0i16; MlKem768::N])

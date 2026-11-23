@@ -168,10 +168,10 @@ This replays 25 keyGen, 25 encapsulation, and 10 decapsulation vectors and asser
 
 As an educational project, there are several areas that require improvement before this crate could be considered cryptographically secure for real-world usage:
 
-1. **Strict constant-time execution:**
-   While the mathematical NTT structures are naturally constant-time, certain operations (especially the implicit rejection comparison in `decaps_internal` and polynomial compression/decompression bounds) must be rigorously vetted and refactored using a crate like `subtle` to ensure they do not leak timing information.
-2. **Secure memory zeroization:**
-   Cryptographic keys (especially `dk` and intermediate shared secrets) currently reside in standard memory. A production implementation must use the `zeroize` crate more thoroughly to securely wipe memory buffers the moment they go out of scope, preventing cold-boot and memory-dump attacks.
+1. **Constant-time execution (done, but unaudited):**
+   Every operation on secret data is written to avoid secret-dependent branches, memory indexing and hardware division: `reduce::mod_q` / `caddq` / `csubq` use sign masks and a multiply-shift reciprocal, `Compress_d` (including the message decode in `decrypt`) divides by `q` via `reduce::div_q` instead of `/` (the KyberSlash issue), `ByteDecode_12` uses a branchless conditional subtract, message bits are expanded with masks, and decaps always computes both the real and the implicit-rejection key and picks one with `subtle`. These are checked exhaustively against the naive formulas in the unit tests. Rust gives no constant-time guarantee, though, so the generated assembly should still be checked on each target (e.g. with `dudect`-style timing tests or Valgrind/`ctgrind`).
+2. **Secure memory zeroization (partial):**
+   Intermediate secrets in keygen/encrypt/decrypt/decaps (seeds, noise polynomials, `s_hat`, `m'`, `K'`, `K̄`, `z`) are wiped with `zeroize` before returning. `KeyPair::dk` and the returned shared secret are still plain arrays the caller must wipe, and copies of `Copy` types left on the stack by the compiler are not covered.
 3. **Side-channel attack (SCA) resistance:**
    Advanced side-channel protections, such as coefficient masking and execution jitter, are not implemented. An attacker with physical access to the device or power-monitoring capabilities could potentially extract secret keys.
 4. **x86_64 optimizations (AVX2 / AVX-512):**
