@@ -4,15 +4,15 @@ use crate::poly::Poly;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use sha3::Shake128;
 
-/// SampleNTT: rejection sample coefficients mod q from XOF stream
+/// SampleNTT (FIPS 203 Algorithm 7)
 pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
     let mut coeffs = [0i16; MlKem768::N];
     let mut hasher = Shake128::default();
     hasher.update(seed);
-    hasher.update(&[j, i]); // FIPS 203 requires (rho || j || i), not (rho || i || j)
+    hasher.update(&[j, i]);
     let mut reader = hasher.finalize_xof();
 
-    let mut buf = [0u8; 170]; // SHAKE128 rate (168) + up to 2 leftover bytes
+    let mut buf = [0u8; 170];
     let mut leftover = 0usize;
     let mut ctr = 0usize;
 
@@ -48,10 +48,7 @@ pub fn sample_ntt(seed: &[u8; 32], i: u8, j: u8) -> Poly {
     Poly(coeffs)
 }
 
-/// SamplePolyCBD(eta): centered binomial distribution from PRF stream.
-/// The bit trick below only works for eta=2 (ML-KEM-768's only value), so
-/// this asserts unconditionally rather than via `debug_assert!` — a wrong
-/// eta must fail loudly, not silently sample the wrong distribution.
+/// SamplePolyCBD_2 (FIPS 203 Algorithm 8)
 pub fn sample_poly_cbd_eta(seed: &[u8; 32], nonce: u8, eta: usize) -> Poly {
     assert_eq!(eta, MlKem768::ETA2, "sample_poly_cbd_eta only implements eta=2");
 
@@ -65,7 +62,6 @@ pub fn sample_poly_cbd_eta(seed: &[u8; 32], nonce: u8, eta: usize) -> Poly {
         let t = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         off += 4;
 
-        // d holds pairwise bit sums: counts of set bits in each 2-bit group.
         let d = (t & 0x5555_5555).wrapping_add((t >> 1) & 0x5555_5555);
 
         let base = chunk * 8;

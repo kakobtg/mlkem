@@ -31,9 +31,7 @@ pub fn decaps_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     decaps_internal_768(dk, ct_in)
 }
 
-/// Deterministic keygen for KATs. Per FIPS 203 Algorithm 16, `d` is passed
-/// straight to `pke::keygen` with no hashing here — K-PKE.KeyGen does its
-/// own `G(d ‖ k)` internally.
+/// FIPS 203 Algorithm 16
 pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     let (ek, sk_pke) = pke::keygen(d);
 
@@ -55,9 +53,7 @@ pub fn keygen_internal_768(d: &[u8; 32], z: &[u8; 32]) -> KeyPair {
     KeyPair { ek, dk }
 }
 
-/// Deterministic encaps for KATs (FIPS 203 Algorithm 17). `K` from
-/// `G(m ‖ H(ek))` is returned as-is — no extra hashing with the ciphertext
-/// (that was round-3 Kyber; FIPS 203 dropped it).
+/// FIPS 203 Algorithm 17
 pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError> {
     let h_ek = hash::h_sha3_256(ek);
 
@@ -78,11 +74,8 @@ pub fn encaps_internal_768(m: &[u8; 32], ek: &Ek) -> Result<(Ct, Ss), MlKemError
     Ok((ct?, k))
 }
 
-/// Deterministic decaps (FIPS 203 Algorithm 18). Implicit rejection hashes
-/// `z ‖ c` — the raw ciphertext, not `H(c)`; the valid branch returns `K'`
-/// as-is, matching `encaps_internal_768`.
+/// FIPS 203 Algorithm 18
 pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
-    // dk layout: sk_pke || ek || h_ek || z
     let mut off = 0;
     let mut sk_pke = [0u8; SK_PKE_BYTES];
     sk_pke.copy_from_slice(&dk[off..off + SK_PKE_BYTES]);
