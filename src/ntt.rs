@@ -699,11 +699,7 @@ unsafe fn mul_ntt_inner(a: &Poly, b: &Poly, out: &mut Poly) {
     }
 }
 
-// Scalar helpers: a comparison oracle for the NEON code in tests.
-// Scalar NTT. On non-aarch64 targets this is the production path, so it must
-// be constant-time too: all reductions go through `reduce::mod_q` (no `%`, no
-// branches). The twiddle computation below uses `%`, but only on the public
-// loop index, never on coefficient data.
+// Scalar reference helpers, used for tests and as a comparison oracle.
 mod scalar_ref {
     use super::Q;
 
@@ -722,7 +718,6 @@ mod scalar_ref {
         let v: i32 = 20159;
         let t = ((a as i32 * v) >> 26) as i16;
         let r = a - t * Q;
-        // conditionally add/sub q to land in [0, q), without branching
         crate::reduce::csubq(crate::reduce::caddq(r as i32)) as i16
     }
 

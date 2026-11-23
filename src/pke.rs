@@ -145,14 +145,12 @@ pub fn encrypt(_ek: &Ek, _m: &[u8; 32], _coins: &[u8; 32]) -> Result<Ct, MlKemEr
     let v_acc = dot_ntt_raw(&t_hat_vec, &r_hat).reduced();
     let v_pre_msg = ntt::inv_ntt(v_acc).add(&e2).reduced();
 
-    // Decompress_1(m): bit -> {0, (q+1)/2}. The message is secret, so build
-    // the coefficient from an all-ones/all-zeros mask instead of branching.
     let mut m_poly = [0i16; MlKem768::N];
     let msg_val = ((MlKem768::Q + 1) / 2) as i16;
     for (byte_idx, byte) in _m.iter().enumerate() {
         let base = byte_idx * 8;
         for bit in 0..8 {
-            let mask = -(((byte >> bit) & 1) as i16); // 0x0000 or 0xFFFF
+            let mask = -(((byte >> bit) & 1) as i16);
             m_poly[base + bit] = mask & msg_val;
         }
     }
@@ -200,8 +198,6 @@ pub fn decrypt(_dk: &[u8], _ct: &Ct) -> Result<[u8; 32], MlKemError> {
     let v_poly = encode::decompress::<{ MlKem768::DV }>(&v_comp);
     let mut m_poly = v_poly.sub(&ntt::inv_ntt(acc));
 
-    // m = ByteEncode_1(Compress_1(w)). Constant-time compress: no division
-    // on the secret-dependent coefficient (KyberSlash2).
     let mut m = [0u8; 32];
     for (i, &coef) in m_poly.0.iter().enumerate() {
         let bit = encode::compress_coef::<1>(coef) as u8;

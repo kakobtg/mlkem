@@ -96,10 +96,6 @@ pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
     off += 32;
     let mut z = util::split_at_32(dk, off).0;
 
-    // Neither `decrypt` nor `encrypt` can fail for fixed-size inputs, but if
-    // they ever did we must not return early: the timing of an early exit
-    // would distinguish the two branches. Fold any error into the result at
-    // the very end instead, after every secret has been wiped.
     let mut dec = pke::decrypt(&sk_pke, ct_in);
     sk_pke.zeroize();
     let mut m_prime = *dec.as_ref().unwrap_or(&[0u8; 32]);
@@ -114,12 +110,8 @@ pub fn decaps_internal_768(dk: &Dk, ct_in: &Ct) -> Result<Ss, MlKemError> {
 
     let enc = pke::encrypt(&ek, &m_prime, &r_prime);
     let mut ct_prime = *enc.as_ref().unwrap_or(&[0u8; MlKem768::CT_BYTES]);
-    // Constant-time comparison: whether (and where) the re-encryption
-    // differs is exactly what a chosen-ciphertext attacker wants to learn.
     let valid = ct::ct_eq(ct_in, &ct_prime);
 
-    // Always compute the rejection key, valid or not, so both outcomes take
-    // the same time.
     let mut bad_in = [0u8; 32 + MlKem768::CT_BYTES];
     bad_in[..32].copy_from_slice(&z);
     bad_in[32..].copy_from_slice(ct_in);
